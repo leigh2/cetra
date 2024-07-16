@@ -1,0 +1,2 @@
+include src/cetra/cetra.cu
+include src/cetra/default_transit_model.npz
