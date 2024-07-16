@@ -697,7 +697,8 @@ class TransitDetector(object):
             min_duration=0.02, max_duration=1.0, duration_log_step=1.1,
             ts_stride_fraction=None, ts_stride_length=None,
             resample_cadence=None,
-            transit_model=None, transit_model_size=1024
+            transit_model=None, transit_model_size=1024,
+            verbose=True
     ):
         """
         Initialise the transit detector.
@@ -751,16 +752,19 @@ class TransitDetector(object):
             The larger the value the smaller the max error in the model.
             A value of 1024 gives a maximum error of ~1%, 2048 is ~0.5%,
             512 is ~2%.
+        verbose : bool, optional
+            If True (the default), reports various messages.
         """
         # validate the input light curve
         self.lc_in = LightCurve(times, flux, flux_error)
 
-        # report the input light curve cadence
-        print(f"input light curve has {self.lc_in.num_points} elements\n"
-              f"cadence: {self.lc_in.cadence * Constants.seconds_per_day:.0f}s "
-              f"(range: {self.lc_in.cadence_range[0] * Constants.seconds_per_day:.0f}s -> "
-              f"{self.lc_in.cadence_range[1] * Constants.seconds_per_day:.0f}s)\n"
-              f"constant flux model log-likelihood: {self.lc_in.flat_loglike:.3e}")
+        if verbose:
+            # report the input light curve cadence
+            print(f"input light curve has {self.lc_in.num_points} elements\n"
+                  f"cadence: {self.lc_in.cadence * Constants.seconds_per_day:.0f}s "
+                  f"(range: {self.lc_in.cadence_range[0] * Constants.seconds_per_day:.0f}s -> "
+                  f"{self.lc_in.cadence_range[1] * Constants.seconds_per_day:.0f}s)\n"
+                  f"constant flux model log-likelihood: {self.lc_in.flat_loglike:.3e}")
 
         # resample the new light curve to regularise the cadence
         # a regularised cadence is necessary so that we can cheaply determine
@@ -772,11 +776,12 @@ class TransitDetector(object):
         else:
             self.lc = self.lc_in.resample(resample_cadence / Constants.seconds_per_day)
 
-        # report the resampled light curve cadence
-        print(f"resampled light curve has {self.lc.num_points} elements\n"
-              f"cadence: {self.lc.cadence * Constants.seconds_per_day:.0f}s "
-              f"(range: {self.lc.cadence_range[0] * Constants.seconds_per_day:.0f}s -> "
-              f"{self.lc.cadence_range[1] * Constants.seconds_per_day:.0f}s)")
+        if verbose:
+            # report the resampled light curve cadence
+            print(f"resampled light curve has {self.lc.num_points} elements\n"
+                  f"cadence: {self.lc.cadence * Constants.seconds_per_day:.0f}s "
+                  f"(range: {self.lc.cadence_range[0] * Constants.seconds_per_day:.0f}s -> "
+                  f"{self.lc.cadence_range[1] * Constants.seconds_per_day:.0f}s)")
 
         if durations is not None:
             # use the provided duration grid
@@ -796,9 +801,10 @@ class TransitDetector(object):
             warnings.warn("The duration grid is empty")
             return
 
-        # report the duration grid size
-        print(f"{self.duration_count} durations, "
-              f"{self.durations[0]:.2f} -> {self.durations[-1]:.2f} days")
+        if verbose:
+            # report the duration grid size
+            print(f"{self.duration_count} durations, "
+                  f"{self.durations[0]:.2f} -> {self.durations[-1]:.2f} days")
 
         # Pre-pad the light curve with null data to make simpler the algorithm
         # that searches for transits that begin before the data. This requires
@@ -806,18 +812,19 @@ class TransitDetector(object):
         # resampling operation.
         num_prepad = int(np.ceil(np.max(self.durations) / self.lc.cadence))
         self.lc = self.lc.pad(num_prepad, 0)
-        print(f"prepended {num_prepad} null points to the light curve")
+        if verbose:
+            print(f"prepended {num_prepad} null points to the light curve")
 
         if transit_model is not None:
-            print("user-provided transit model")
+            if verbose:
+                print("user-provided transit model")
             self.input_model = np.asarray(transit_model)
         else:
-            print("default transit model")
+            if verbose:
+                print("default transit model")
             tmod_file_path = os.path.join(os.path.dirname(__file__), "default_transit_model.npz")
             tmod = np.load(tmod_file_path)
             self.input_model = tmod["model_array"]
-
-        print(self.input_model)
 
         # generate the transit model
         self.transit_model = interpolate_model(
@@ -831,9 +838,9 @@ class TransitDetector(object):
         # send the offset transit model to the gpu
         self.offset_transit_model_gpu = to_gpu(self.offset_transit_model, np.float32)
 
-        # report the transit model size
-        print(f"transit model size: {self.transit_model_size} elements")
-        if transit_model is None:
+        if verbose:
+            # report the transit model size
+            print(f"transit model size: {self.transit_model_size} elements")
             # report the nearest neighbour error
             _nn_error = nn_model_error(self.transit_model_size, self.input_model)
             print(f"maximum nearest-neighbour error: {100 * _nn_error[0]:.2e}%")
@@ -854,14 +861,15 @@ class TransitDetector(object):
             _fracval = np.min(self.durations) * ts_stride_fraction
             _lenval = ts_stride_length / Constants.seconds_per_day
             self.ts_stride_length = min(_fracval, _lenval)
-        print(f"ts stride length: {self.ts_stride_length * Constants.seconds_per_day:.3f} seconds")
+        if verbose:
+            print(f"ts stride length: {self.ts_stride_length * Constants.seconds_per_day:.3f} seconds")
         # generate the grid of tss
         self.tss = np.arange(0, self.lc.offset_time[-1], self.ts_stride_length)
         self.num_ts_strides = self.tss.size
-        print(f"{self.num_ts_strides:d} ts strides")
+        if verbose:
+            print(f"{self.num_ts_strides:d} ts strides")
 
-        # initialise instance variables that only get populated in certain
-        # circumstances
+        # initialise instance variables that get populated later
         self.periods = None
         self.period_count = None
         self.like_ratio_2d_gpu = None
@@ -987,9 +995,10 @@ class TransitDetector(object):
         else:
             order = np.arange(self.period_count)  # ascending
 
-        print(f"testing {self.period_count} periods from "
-              f"{self.periods.min():.2e} to "
-              f"{self.periods.max():.2e} days")
+        if verbose:
+            print(f"testing {self.period_count} periods from "
+                  f"{self.periods.min():.2e} to "
+                  f"{self.periods.max():.2e} days")
 
         # record the start time
         t0 = time()
