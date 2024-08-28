@@ -263,8 +263,8 @@ class LightCurve(object):
         _sum_w = _err_out  # we can reuse this array if we're careful!
         # type specification
         _cadence = np.float64(new_cadence)
-        _n_elem = np.uint32(self.num_points)
-        _n_elem_out = np.uint32(new_time.size)
+        _n_elem = np.int32(self.num_points)
+        _n_elem_out = np.int32(new_time.size)
 
         # set the cuda block and grid sizes
         _blocksize = (cuda_blocksize, 1, 1)
@@ -1040,8 +1040,8 @@ class TransitDetector(object):
             'like_ratio': np.full(self.period_count, np.nan, dtype=np.float32),
             'depth': np.full(self.period_count, np.nan, dtype=np.float32),
             'var_depth': np.full(self.period_count, np.nan, dtype=np.float32),
-            'ts_idx': np.full(self.period_count, -1, dtype=np.uint32),
-            'duration_idx': np.full(self.period_count, -1, dtype=np.uint32)
+            'ts_idx': np.full(self.period_count, -1, dtype=np.int32),
+            'duration_idx': np.full(self.period_count, -1, dtype=np.int32)
         }
 
         # deal with the ordering of the search
@@ -1183,12 +1183,12 @@ class TransitDetector(object):
             return np.nan, np.nan, np.nan, -1, -1
 
         # find the indices and number of durations that are in range
-        first_d_in_range_idx = np.uint32(_durations_in_range[0])
-        last_d_in_range_idx = np.uint32(_durations_in_range[-1])
-        num_d_in_range = np.uint32(_durations_in_range.size)
+        first_d_in_range_idx = np.int32(_durations_in_range[0])
+        last_d_in_range_idx = np.int32(_durations_in_range[-1])
+        num_d_in_range = np.int32(_durations_in_range.size)
 
         # maximum possible number of transits
-        max_transit_count = np.uint32(np.floor(self.lc.epoch_baseline / period) + 1)
+        max_transit_count = np.int32(np.floor(self.lc.epoch_baseline / period) + 1)
         # the period in strides
         _period_in_strides = np.float32(period / self.ts_stride_length)
 
@@ -1210,19 +1210,19 @@ class TransitDetector(object):
         tmp_likerat_gpu = gpuarray.empty(tmp_size, dtype=np.float32)
         tmp_depth_gpu = gpuarray.empty(tmp_size, dtype=np.float32)
         tmp_var_depth_gpu = gpuarray.empty(tmp_size, dtype=np.float32)
-        tmp_dur_index_gpu = gpuarray.empty(tmp_size, dtype=np.uint32)
-        tmp_ts_index_gpu = gpuarray.empty(tmp_size, dtype=np.uint32)
+        tmp_dur_index_gpu = gpuarray.empty(tmp_size, dtype=np.int32)
+        tmp_ts_index_gpu = gpuarray.empty(tmp_size, dtype=np.int32)
         # second pass output
         sgl_likerat_gpu = gpuarray.empty(1, dtype=np.float32)
         sgl_depth_gpu = gpuarray.empty(1, dtype=np.float32)
         sgl_var_depth_gpu = gpuarray.empty(1, dtype=np.float32)
-        sgl_dur_index_gpu = gpuarray.empty(1, dtype=np.uint32)
-        sgl_ts_index_gpu = gpuarray.empty(1, dtype=np.uint32)
+        sgl_dur_index_gpu = gpuarray.empty(1, dtype=np.int32)
+        sgl_ts_index_gpu = gpuarray.empty(1, dtype=np.int32)
 
         # type specification
-        _tm_size = np.uint32(self.transit_model_size)
-        _duration_count = np.uint32(self.duration_count)
-        _all_ts_stride_count = np.uint32(self.num_ts_strides)
+        _tm_size = np.int32(self.transit_model_size)
+        _duration_count = np.int32(self.duration_count)
+        _all_ts_stride_count = np.int32(self.num_ts_strides)
 
         # run the first kernel
         _periodic_search_k1(
@@ -1250,7 +1250,7 @@ class TransitDetector(object):
         _periodic_search_k2(
             tmp_likerat_gpu, tmp_depth_gpu, tmp_var_depth_gpu, tmp_dur_index_gpu, tmp_ts_index_gpu,
             sgl_likerat_gpu, sgl_depth_gpu, sgl_var_depth_gpu, sgl_dur_index_gpu, sgl_ts_index_gpu,
-            np.uint32(tmp_size),
+            np.int32(tmp_size),
             block=block_size_k2, grid=grid_size_k2, shared=smem_size_k2
         )
 
@@ -1319,10 +1319,10 @@ class TransitDetector(object):
         # type specification
         _cadence = np.float32(self.lc.cadence)
         _ts_stride_length = np.float32(self.ts_stride_length)
-        _n_elem = np.uint32(self.lc.num_points)
-        _tm_size = np.uint32(self.transit_model_size)
-        _duration_count = np.uint32(self.duration_count)
-        _ts_stride_count = np.uint32(self.num_ts_strides)
+        _n_elem = np.int32(self.lc.num_points)
+        _tm_size = np.int32(self.transit_model_size)
+        _duration_count = np.int32(self.duration_count)
+        _ts_stride_count = np.int32(self.num_ts_strides)
 
         # record the start time
         t0 = time()
