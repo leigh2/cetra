@@ -40,7 +40,7 @@ class LightCurve(object):
         Parameters
         ----------
         times : array-like
-            Sequence of light curve observation time points.
+            Sequence of light curve observation time points in days.
         fluxes : array-like
             Sequence of light curve relative (to baseline) flux points.
         flux_errors : array-like
