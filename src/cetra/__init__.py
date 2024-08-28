@@ -1,2 +1,2 @@
-from .cetra import TransitDetector
+from .cetra import TransitDetector, LightCurve
 from . import utils
