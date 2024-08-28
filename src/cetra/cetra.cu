@@ -15,13 +15,13 @@ __global__ void monotransit_search(
     const float * flux,  // offset flux array
     const float * wght,  // offset flux weight array
     const float cadence,  // the cadence of the light curve
-    const unsigned int lc_size,  // number of light curve elements
+    const int lc_size,  // number of light curve elements
     const float * tmodel,  // offset flux transit model array
-    const unsigned int tm_size,  // number of transit model elements
+    const int tm_size,  // number of transit model elements
     const float * durations,  // the duration array
-    const unsigned int n_durations,  // the number of durations
+    const int n_durations,  // the number of durations
     const float ts_stride_length,  // the number of start times per duration
-    const unsigned int ts_stride_count,  // number of start time strides
+    const int ts_stride_count,  // number of start time strides
     float * like_ratio,  // the likelihood ratio array (to be filled)
     float * depth,  // the depth array (to be filled)
     float * vdepth  // the depth variance array (to be filled)
@@ -60,7 +60,7 @@ __global__ void monotransit_search(
         if (ts_num >= ts_stride_count) return;
 
         // 2d output array pointer
-        unsigned int arr2d_ptr = ts_num + ts_stride_count * dur_id;
+        int arr2d_ptr = ts_num + ts_stride_count * dur_id;
 
         // calculate ts
         float ts = ts_num * ts_stride_length;
@@ -204,7 +204,7 @@ __global__ void resample_k1(
     const double cadence,  // desired output cadence
     const double * flux,  // input light curve offset flux array
     const double * ferr,  // input light curve offset flux error array
-    const unsigned int n_elem,  // number of elements in input light curve
+    const int n_elem,  // number of elements in input light curve
     double * sum_of_weighted_flux,  // array of sum(f*w)
     double * sum_of_weights  // array of sum(w)
 ){
@@ -231,7 +231,7 @@ __global__ void resample_k2(
     const double * sum_w,  // array of sum(weight)
     double * rflux,  // array of weighted average flux relative to baseline
     double * eflux,  // array of error on weighted average flux relative to baseline
-    const unsigned int n_elem
+    const int n_elem
 ){
     const int x_idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (x_idx >= n_elem) return;
@@ -251,15 +251,15 @@ __global__ void periodic_search_k1(
     const float * in_like_ratio,  // the previously computed likelihood ratios
     const float * in_depth,  // the previously computed max-likelihood depths
     const float * in_var_depth,  // the previously computed max-likelihood depth variance
-    const unsigned int long_ts_count,  // start time stride count across whole light curve
-    const unsigned int duration_idx_first,  // the index of the first duration to check
-    const unsigned int duration_idx_last,  // the index of the last duration to check
-    const unsigned int max_transit_count,  // the maximum possible number of transits for this period
+    const int long_ts_count,  // start time stride count across whole light curve
+    const int duration_idx_first,  // the index of the first duration to check
+    const int duration_idx_last,  // the index of the last duration to check
+    const int max_transit_count,  // the maximum possible number of transits for this period
     float * lrat_out,  // the temporary max likelihood ratio array (to be filled)
     float * depth_out,  // the temporary depth array (to be filled)
     float * vdepth_out,  // the temporary depth variance array (to be filled)
-    unsigned int * d_idx_out,  // the temporary duration index array (to be filled)
-    unsigned int * ts_idx_out  // the temporary start time index array (to be filled)
+    int * d_idx_out,  // the temporary duration index array (to be filled)
+    int * ts_idx_out  // the temporary start time index array (to be filled)
 ){
     // variable declarations
     bool null = false;
@@ -286,7 +286,7 @@ __global__ void periodic_search_k1(
     };
 
     // output array pointer
-    const unsigned int out2d_ptr = blockIdx.x + gridDim.x * blockIdx.y;
+    const int out2d_ptr = blockIdx.x + gridDim.x * blockIdx.y;
 
     // accumulators
     float _sum_dw = 0.0;
@@ -365,7 +365,7 @@ __global__ void periodic_search_k1(
     // would obtain the joint-likelihood
 
     // now do the block level max reduction operation, also recording the pointers
-    for (unsigned int s = blockDim.x / 2; s > 0; s >>= 1){
+    for (int s = blockDim.x / 2; s > 0; s >>= 1){
         if (threadIdx.x < s) {
             if ((isnan(sm[sm_ptr_lr])) \
                 || ((sm[sm_ptr_lr + s] > sm[sm_ptr_lr]) \
@@ -378,7 +378,7 @@ __global__ void periodic_search_k1(
     }
 
     // only the max-likelihood ratio thread records its results
-    const unsigned int best_tid = lrintf(sm[blockDim.x]);
+    const int best_tid = lrintf(sm[blockDim.x]);
     if (threadIdx.x == best_tid) {
         lrat_out[out2d_ptr] = sm[sm_ptr_lr];
         depth_out[out2d_ptr] = wav_depth;
@@ -393,14 +393,14 @@ __global__ void periodic_search_k2(
     const float * lrat_in,  // max likelihood ratio array
     const float * depth_in,  // depth array
     const float * vdepth_in,  // depth variance array
-    const unsigned int * d_idx_in,  // duration index array
-    const unsigned int * ts_idx_in,  // start time index array
+    const int * d_idx_in,  // duration index array
+    const int * ts_idx_in,  // start time index array
     float * lrat_out,  // max likelihood ratio array (single element - to be filled)
     float * depth_out,  // depth array (single element - to be filled)
     float * vdepth_out,  // depth variance array (single element - to be filled)
-    unsigned int * d_idx_out,  // duration index array (single element - to be filled)
-    unsigned int * ts_idx_out,  // start time index array (single element - to be filled)
-    const unsigned int in_arr_len  // length of input arrays
+    int * d_idx_out,  // duration index array (single element - to be filled)
+    int * ts_idx_out,  // start time index array (single element - to be filled)
+    const int in_arr_len  // length of input arrays
 ){
     // open the array in shared memory
     extern __shared__ float sm[];
@@ -425,7 +425,7 @@ __global__ void periodic_search_k2(
     __syncthreads();
 
     // final reduction through shared memory
-    for (unsigned int s = blockDim.x / 2; s > 0; s >>= 1){
+    for (int s = blockDim.x / 2; s > 0; s >>= 1){
         if (threadIdx.x < s) {
             if ((isnan(sm[sm_ptr_lr])) || ((sm[sm_ptr_lr + s] > sm[sm_ptr_lr]) && (!isnan(sm[sm_ptr_lr+s])))) {
                 sm[sm_ptr_lr] = sm[sm_ptr_lr+s];
@@ -436,7 +436,7 @@ __global__ void periodic_search_k2(
     }
 
     // record the maximum likelihood parameters
-    const unsigned int best_idx = lrintf(sm[blockDim.x]);
+    const int best_idx = lrintf(sm[blockDim.x]);
     lrat_out[0] = lrat_in[best_idx];
     depth_out[0] = depth_in[best_idx];
     vdepth_out[0] = vdepth_in[best_idx];
