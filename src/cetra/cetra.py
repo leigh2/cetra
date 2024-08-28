@@ -27,6 +27,8 @@ _resample_k2 = cu_src.get_function("resample_k2")
 _monotransit_search = cu_src.get_function("monotransit_search")
 _periodic_search_k1 = cu_src.get_function("periodic_search_k1")
 _periodic_search_k2 = cu_src.get_function("periodic_search_k2")
+# detrending kernels
+_biweight_detrend = cu_src.get_function("biweight_detrend")
 
 
 class LightCurve(object):
@@ -126,6 +128,59 @@ class LightCurve(object):
 
     def __len__(self):
         return self.num_points
+
+    def detrend_biweight(self, window_size, tuning_parameter, cuda_blocksize=1024):
+        """
+        Detrend using the Tukey Biweight algorithm
+
+        Parameters
+        ----------
+        window_size : float
+            The half-width of the moving window in time units
+        tuning_parameter : float
+            The tuning parameter
+        cuda_blocksize : int, optional
+            The number of threads per block. Should be a multiple of 32 and
+            less than or equal to 1024. Default 1024.
+
+        Returns
+        -------
+        A LightCurve instance with the trend removed
+        """
+        # send some arrays to the gpu
+        offset_flux_gpu = to_gpu(self.offset_flux, np.float32)
+        offset_flux_error_gpu = to_gpu(self.offset_flux_error, np.float32)
+        # initialise output arrays on the gpu
+        detrended_gpu = gpuarray.zeros(self.num_points, dtype=np.float32)
+        detrended_error_gpu = gpuarray.zeros(self.num_points, dtype=np.float32)
+        # cast the tuning parameter to f32
+        _tpar = np.float32(tuning_parameter)
+        # determine the window size
+        _window = np.int32(np.ceil(window_size / self.cadence))
+        # cast the number of elements to int32
+        _n_elem = np.int32(self.num_points)
+
+        # set the cuda block and grid sizes
+        _blocksize = (cuda_blocksize, 1, 1)
+        _gridsize = (int(np.ceil(self.num_points / cuda_blocksize)), 1, 1)
+
+        # run the kernel
+        _biweight_detrend(
+            offset_flux_gpu, offset_flux_error_gpu,
+            detrended_gpu, detrended_error_gpu,
+            _window, _tpar, _n_elem,
+            block=_blocksize, grid=_gridsize
+        )
+        drv.Context.synchronize()
+
+        # return the detrended light curve
+        try:
+            return LightCurve(
+                self.time, 1.0 - detrended_gpu.get(), detrended_error_gpu.get()
+            )
+        except Exception as e:
+            print(e)
+            return detrended_gpu.get(), detrended_error_gpu.get()
 
     def pad(self, num_points_start, num_points_end):
         """

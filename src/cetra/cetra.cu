@@ -444,3 +444,78 @@ __global__ void periodic_search_k2(
     ts_idx_out[0] = ts_idx_in[best_idx];
 
 }
+
+// biweight detrending algorithm
+__global__ void biweight_detrend(
+    const float * flux,  // offset flux array
+    const float * error,  // offset flux error array
+    float * detrended,  // detrended flux array
+    float * detrended_error,  // detrended error array
+    const int window_size,  // half-width of the window in light curve elements
+    const float tpar,  // tuning value
+    const int n_elem
+){
+    const int idx = blockIdx.x * blockDim.x + threadIdx.x;
+    if (idx >= n_elem) return;
+
+    // find the mean
+    // accumulators
+    double fsum = 0.0;
+    int count = 0;
+    // for each light curve point in the window
+    for (int i = idx - window_size; i < idx + window_size; i += 1) {
+
+        // skip if before or after the data
+        if ((i < 0) || (i >= n_elem)) continue;
+        // skip if null data point
+        if (isinf(error[i])) continue;
+
+        // accumulate
+        fsum += flux[i];
+        count += 1;
+    }
+
+    // the starting centre is the mean
+    double centre = fsum / count;
+    double centre_old = centre * 1.0;
+    double delta_c = INFINITY;
+
+    // until convergence...
+    while (abs(delta_c) > 1e-6) {
+        // accumulators
+        double csum = 0.0;
+        double wsum = 0.0;
+
+        // for each light curve point in the window
+        for (int i = idx - window_size; i < idx + window_size; i += 1) {
+            // skip if before or after the data
+            if ((i < 0) || (i >= n_elem)) continue;
+            // skip if null data point
+            if (isinf(error[i])) continue;
+
+            // compute the distance from the centre
+            double distance = flux[i] - centre;
+            double dmad = distance * tpar;
+
+            // compute the weight
+            double weight = 1.0 - dmad*dmad;
+            weight *= weight;
+            if (abs(dmad) >= 1.0) {
+                weight = 0.0;
+            }
+
+            // accumulate
+            csum += distance * weight;
+            wsum += weight;
+        }
+
+        // compute the new centre location
+        centre_old = centre * 1.0;
+        centre += (csum / wsum);
+        delta_c = centre_old - centre;
+    }
+
+    // subtract the trend
+    detrended[idx] = flux[idx] - centre;
+    detrended_error[idx] = error[idx];
+}
