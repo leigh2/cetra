@@ -174,13 +174,9 @@ class LightCurve(object):
         drv.Context.synchronize()
 
         # return the detrended light curve
-        try:
-            return LightCurve(
-                self.time, 1.0 - detrended_gpu.get(), detrended_error_gpu.get()
-            )
-        except Exception as e:
-            print(e)
-            return detrended_gpu.get(), detrended_error_gpu.get()
+        return LightCurve(
+            self.time, 1.0 - detrended_gpu.get(), detrended_error_gpu.get()
+        )
 
     def pad(self, num_points_start, num_points_end):
         """
