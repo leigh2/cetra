@@ -495,7 +495,7 @@ __global__ void biweight_detrend(
 
             // compute the distance from the centre
             double distance = flux[i] - centre;
-            double dmad = distance * tpar;
+            double dmad = distance / tpar;
 
             // compute the weight
             double weight = 1.0 - dmad*dmad;
@@ -510,9 +510,10 @@ __global__ void biweight_detrend(
         }
 
         // compute the new centre location
-        centre_old = centre * 1.0;
         centre += (csum / wsum);
+        // compute the change in location
         delta_c = centre_old - centre;
+        centre_old = centre * 1.0;
     }
 
     // subtract the trend
