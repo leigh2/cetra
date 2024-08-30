@@ -13,6 +13,7 @@ from time import time
 from dataclasses import dataclass
 from scipy.optimize import curve_fit
 from scipy.interpolate import interp1d
+from copy import deepcopy
 
 # read the cuda source code
 cu_src_file_path = os.path.join(os.path.dirname(__file__), "cetra.cu")
@@ -129,7 +130,46 @@ class LightCurve(object):
     def __len__(self):
         return self.num_points
 
-    def detrend_biweight(self, window_size, tuning_parameter, cuda_blocksize=1024):
+    def copy(self):
+        return deepcopy(self)
+
+    def mask_transit(self, transit):
+        """
+        Mask a transit (single or periodic)
+
+        Parameters
+        ----------
+        transit : Transit
+            The transit to mask
+
+        Returns
+        -------
+        LightCurve instance with the transit removed, np.ndarray that is `True`
+        while in-transit and `False` otherwise.
+        """
+        # todo maybe allow some user-specific border as fraction of the duration
+
+        # are we periodic?
+        periodic = transit.period is not None
+
+        # compute the phase
+        phase = self.time - transit.ts
+        if periodic:
+            phase %= transit.period
+
+        # generate the mask
+        itr_mask = (phase > 0) & (phase < transit.duration)
+
+        # generate a new LightCurve
+        LC_new = LightCurve(
+            times=self.time[~itr_mask],
+            fluxes=self.relative_flux[~itr_mask],
+            flux_errors=self.relative_flux_error[~itr_mask]
+        )
+
+        return LC_new, itr_mask
+
+    def detrend_biweight(self, window_size, tuning_parameter, remove_partial_windows=False, cuda_blocksize=1024):
         """
         Detrend using the Tukey Biweight algorithm
 
@@ -139,6 +179,11 @@ class LightCurve(object):
             The half-width of the moving window in time units
         tuning_parameter : float
             The tuning parameter
+        remove_partial_windows : bool, optional
+            If `True`, removes one window size of data at the start and end of
+            the output light curve, in which the detrending performance is
+            likely to be poor. If `False` (the default), no removal is
+            performed.
         cuda_blocksize : int, optional
             The number of threads per block. Should be a multiple of 32 and
             less than or equal to 1024. Default 1024.
@@ -174,8 +219,12 @@ class LightCurve(object):
         drv.Context.synchronize()
 
         # return the detrended light curve
+        if remove_partial_windows:
+            keep = slice(_window, -_window)
+        else:
+            keep = slice(0, None)
         return LightCurve(
-            self.time, 1.0 - detrended_gpu.get(), detrended_error_gpu.get()
+            self.time[keep], 1.0 - detrended_gpu.get()[keep], detrended_error_gpu.get()[keep]
         )
 
     def pad(self, num_points_start, num_points_end):
@@ -306,11 +355,12 @@ class Transit(object):
         ts_str += f" ± {self.ts_error:.5f} days\n" if self.ts_error is not None else " days\n"
         duration_str += f" ± {self.duration_error:.5f} days\n" if self.duration_error is not None else " days\n"
         depth_str += f" ± {self.depth_error*1e6:.1f} ppm\n" if self.depth_error is not None else " ppm\n"
+        snr_str = f"           SNR: {self.depth/self.depth_error:.1f}\n" if self.depth_error is not None else ""
         period_str += f" ± {self.period_error:.6f}" if self.period_error is not None else ""
         period_str += " days\n" if self.period is not None else ""
 
-        return f"{ts_str}{duration_str}{depth_str}{period_str}"\
-               f"log-likelihood: {self.log_likelihood:.9e}\n"\
+        return f"{ts_str}{duration_str}{depth_str}{snr_str}{period_str}"\
+               f"log-likelihood: {self.log_likelihood:.4e}\n"\
                f"   lc duration: {self.lightcurve.epoch_baseline:.2f} days\n"\
                f"    lc cadence: {self.lightcurve.cadence*Constants.seconds_per_day:.0f} seconds"
 
@@ -889,8 +939,8 @@ class TransitDetector(object):
                 self.input_model = tmod["model_array"]
             else:
                 raise RuntimeError(
-                    "transit_model not recognised, "
-                    "is it an array, or one of 'b32', 'b93' or 'b99'?"
+                    "transit_model not recognised. "
+                    "Is it an array, or one of 'b32', 'b93' or 'b99'?"
                 )
 
         # generate the transit model
@@ -1027,7 +1077,8 @@ class TransitDetector(object):
             )
             return
         else:
-            print("commencing periodic signal search")
+            if verbose:
+                print("commencing periodic signal search")
 
         if periods is not None:
             # use the provided period grid
@@ -1092,7 +1143,8 @@ class TransitDetector(object):
 
         # record the stop time and report elapsed
         t1 = time()
-        print(f"completed in {t1 - t0:.3f} seconds")
+        if verbose:
+            print(f"completed in {t1 - t0:.3f} seconds")
 
         # generate the periodic search result
         self.periodogram_result = PeriodogramResult(
@@ -1299,7 +1351,8 @@ class TransitDetector(object):
         -------
         MonotransitResult
         """
-        print("commencing monotransit search")
+        if verbose:
+            print("commencing monotransit search")
 
         # initialise output arrays on the gpu
         # tss are along the rows, durations along columns
@@ -1355,7 +1408,8 @@ class TransitDetector(object):
 
         # record the stop time and report the elapsed time
         t1 = time()
-        print(f"completed in {t1 - t0:.3f} seconds")
+        if verbose:
+            print(f"completed in {t1 - t0:.3f} seconds")
 
         # generate the monotransit search result
         self.monotransit_result = MonotransitResult(
