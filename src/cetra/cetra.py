@@ -785,7 +785,7 @@ class TransitDetector(object):
         resample_cadence : float, optional
             The cadence (in seconds) to use for resampling the light curve. By
             default, the module will try to detect the underlying cadence.
-        transit_model : array-like, optional
+        transit_model : array-like or string, optional
             This model will be used, if provided, instead of the default.
             The model should be an offset relative to baseline flux.
             Maximum deviation should be 1 in order for the output depths to be
@@ -798,6 +798,10 @@ class TransitDetector(object):
                 'u': (0.4804, 0.1867),
                 'period': 10.0,
                 'semimajor_axis': 20.0.
+            Alternatively, one of the strings 'b32', 'b93' or 'b99' can be
+            supplied. In this case, a model with impact parameter 0.32 (the
+            default, above), 0.93 or 0.99, respectively, will be used. All
+            other parameters are the same as for the default model.
         transit_model_size : int, optional
             The transit model size, ideally a power of 2. Default 1024.
             The larger the value the smaller the max error in the model.
@@ -866,16 +870,28 @@ class TransitDetector(object):
         if verbose:
             print(f"prepended {num_prepad} null points to the light curve")
 
-        if transit_model is not None:
+        if isinstance(transit_model, list) or isinstance(transit_model, np.ndarray):
             if verbose:
                 print("user-provided transit model")
             self.input_model = np.asarray(transit_model)
+            # todo some checks of user-input models?
         else:
-            if verbose:
-                print("default transit model")
-            tmod_file_path = os.path.join(os.path.dirname(__file__), "default_transit_model.npz")
-            tmod = np.load(tmod_file_path)
-            self.input_model = tmod["model_array"]
+            if transit_model is None:
+                transit_model = "b32"
+            if transit_model in ['b32', 'b93', 'b99']:
+                _impact_params = {'b32': 0.32, 'b93': 0.93, 'b99': 0.99}
+                if verbose:
+                    print(f"using default transit model with impact parameter: "
+                          f"{_impact_params[transit_model]}")
+                tmod_file_path = os.path.join(os.path.dirname(__file__),
+                                              f"transit_model_{transit_model}.npz")
+                tmod = np.load(tmod_file_path)
+                self.input_model = tmod["model_array"]
+            else:
+                raise RuntimeError(
+                    "transit_model not recognised, "
+                    "is it an array, or one of 'b32', 'b93' or 'b99'?"
+                )
 
         # generate the transit model
         self.transit_model = interpolate_model(

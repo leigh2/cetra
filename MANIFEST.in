@@ -1,2 +1,4 @@
 include src/cetra/cetra.cu
-include src/cetra/default_transit_model.npz
+include src/cetra/transit_model_b32.npz
+include src/cetra/transit_model_b93.npz
+include src/cetra/transit_model_b99.npz
