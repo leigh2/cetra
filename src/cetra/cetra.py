@@ -29,7 +29,7 @@ _monotransit_search = cu_src.get_function("monotransit_search")
 _periodic_search_k1 = cu_src.get_function("periodic_search_k1")
 _periodic_search_k2 = cu_src.get_function("periodic_search_k2")
 # detrending kernels
-_biweight_detrend = cu_src.get_function("biweight_detrend")
+_detrender_k1 = cu_src.get_function("detrender_k1")
 
 
 class LightCurve(object):
@@ -168,64 +168,6 @@ class LightCurve(object):
         )
 
         return LC_new, itr_mask
-
-    def detrend_biweight(self, window_size, tuning_parameter, remove_partial_windows=False, cuda_blocksize=1024):
-        """
-        Detrend using the Tukey Biweight algorithm
-
-        Parameters
-        ----------
-        window_size : float
-            The half-width of the moving window in time units
-        tuning_parameter : float
-            The tuning parameter
-        remove_partial_windows : bool, optional
-            If `True`, removes one window size of data at the start and end of
-            the output light curve, in which the detrending performance is
-            likely to be poor. If `False` (the default), no removal is
-            performed.
-        cuda_blocksize : int, optional
-            The number of threads per block. Should be a multiple of 32 and
-            less than or equal to 1024. Default 1024.
-
-        Returns
-        -------
-        A LightCurve instance with the trend removed
-        """
-        # send some arrays to the gpu
-        offset_flux_gpu = to_gpu(self.offset_flux, np.float32)
-        offset_flux_error_gpu = to_gpu(self.offset_flux_error, np.float32)
-        # initialise output arrays on the gpu
-        detrended_gpu = gpuarray.zeros(self.num_points, dtype=np.float32)
-        detrended_error_gpu = gpuarray.zeros(self.num_points, dtype=np.float32)
-        # cast the tuning parameter to f32
-        _tpar = np.float32(tuning_parameter)
-        # determine the window size
-        _window = np.int32(np.ceil(window_size / self.cadence))
-        # cast the number of elements to int32
-        _n_elem = np.int32(self.num_points)
-
-        # set the cuda block and grid sizes
-        _blocksize = (cuda_blocksize, 1, 1)
-        _gridsize = (int(np.ceil(self.num_points / cuda_blocksize)), 1, 1)
-
-        # run the kernel
-        _biweight_detrend(
-            offset_flux_gpu, offset_flux_error_gpu,
-            detrended_gpu, detrended_error_gpu,
-            _window, _tpar, _n_elem,
-            block=_blocksize, grid=_gridsize
-        )
-        drv.Context.synchronize()
-
-        # return the detrended light curve
-        if remove_partial_windows:
-            keep = slice(_window, -_window)
-        else:
-            keep = slice(0, None)
-        return LightCurve(
-            self.time[keep], 1.0 - detrended_gpu.get()[keep], detrended_error_gpu.get()[keep]
-        )
 
     def pad(self, num_points_start, num_points_end):
         """
@@ -1432,6 +1374,94 @@ class TransitDetector(object):
                   f"{self.monotransit_result.get_max_snr_parameters()}")
 
         return self.monotransit_result
+
+    def detrend(self, kernel_width, n_warps=4096, verbose=True):
+        """
+        Detrend the light curve, after a preliminary filtering of transit signals.
+
+        Parameters
+        ----------
+        kernel_width : float
+            Width of the detrending kernel in days. This might be motivated by
+            some prior knowledge about the activity or rotation rate of the
+            target, but should be longer than the maximum transit duration.
+        n_warps : int, optional
+            The number of warps to use, default 4096. We want this to be around
+            a low integer multiple of the number of concurrent warps able to
+            run on the GPU.
+            The A100 has 108 SMs * 64 warps = 6912 concurrent warps.
+            The RTX A5000 has 64 SMs * 48 warps = 3072 concurrent warps.
+            Striding in this way limits the number of reads of the transit
+            model from global into shared memory. This value shouldn't
+            exceed the number of ts strides times the number of durations.
+        verbose : bool, optional
+            If `True`, reports with additional verbosity.
+
+        Returns
+        -------
+        None
+        """
+        if verbose:
+            print("commencing detrending")
+
+        # initialise output arrays on the gpu
+        # tss are along the rows, durations along columns
+        # i.e.
+        # [[t0,d0  t1,d0  t2,d0]
+        #  [t0,d1  t1,d1  t2,d1]
+        #  [t0,d2  t1,d2  t2,d2]]
+        # Numpy and C are row-major
+        outshape_2d = self.duration_count, self.num_ts_strides
+        self.BIC_ratio_gpu = gpuarray.empty(outshape_2d, dtype=np.float32)
+
+        # send the light curve to the gpu
+        self.offset_time_gpu = to_gpu(self.lc.offset_time, np.float32)
+        self.offset_flux_gpu = to_gpu(self.lc.offset_flux, np.float32)
+        self.flux_weight_gpu = to_gpu(self.lc.flux_weight, np.float32)
+
+        # send the durations to the gpu
+        self.durations_gpu = to_gpu(self.durations, np.float32)
+
+        # block and grid sizes
+        block_size = 32, 1, 1  # 1 warp per block
+        grid_size = int(np.ceil(n_warps / outshape_2d[0])), int(outshape_2d[0])
+        # shared memory size - space for the transit model plus 16 elements per
+        #                      thread, with 4 bytes per element
+        smem_size = int(4 * self.transit_model_size + 4 * 16 * block_size[0])
+
+        # type specification
+        _kernel_width = np.float32(kernel_width)
+        _cadence = np.float32(self.lc.cadence)
+        _ts_stride_length = np.float32(self.ts_stride_length)
+        _n_elem = np.int32(self.lc.num_points)
+        _tm_size = np.int32(self.transit_model_size)
+        _duration_count = np.int32(self.duration_count)
+        _ts_stride_count = np.int32(self.num_ts_strides)
+
+        # record the start time
+        t0 = time()
+
+        # run the kernel
+        _detrender_k1(
+            self.offset_time_gpu, self.offset_flux_gpu, self.flux_weight_gpu,
+            _kernel_width, _cadence, _n_elem,
+            self.offset_transit_model_gpu, _tm_size,
+            self.durations_gpu, _duration_count,
+            _ts_stride_length, _ts_stride_count,
+            self.BIC_ratio_gpu,
+            block=block_size, grid=grid_size, shared=smem_size
+        )
+
+        # make sure the operation is finished before recording the time
+        # (device calls are asynchronous)
+        drv.Context.synchronize()
+
+        # record the stop time and report the elapsed time
+        t1 = time()
+        if verbose:
+            print(f"completed in {t1 - t0:.3f} seconds")
+
+        return self.BIC_ratio_gpu.get()
 
 
 if __name__ == "__main__":
