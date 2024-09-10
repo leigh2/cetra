@@ -49,21 +49,21 @@ __global__ void detrender_k1(
     // specify the shared memory array locations and types
     float * sm_tmodel = (float*)sm;
     double * sm_sw = (double*)&sm_tmodel[tm_size];
-    double * sm_swx = (double*)&sm_sw[1 * blockDim.x];
-    double * sm_swy = (double*)&sm_swx[1 * blockDim.x];
-    double * sm_swxx = (double*)&sm_swy[1 * blockDim.x];
-    double * sm_swxy = (double*)&sm_swxx[1 * blockDim.x];
-    double * sm_swxxx = (double*)&sm_swxy[1 * blockDim.x];
-    double * sm_swxxy = (double*)&sm_swxxx[1 * blockDim.x];
-    double * sm_swxxxx = (double*)&sm_swxxy[1 * blockDim.x];
-    double * sm_stjwj = (double*)&sm_swxxxx[1 * blockDim.x];
-    double * sm_sttjwj = (double*)&sm_stjwj[1 * blockDim.x];
-    double * sm_stjwjxj = (double*)&sm_sttjwj[1 * blockDim.x];
-    double * sm_stjwjyj = (double*)&sm_stjwjxj[1 * blockDim.x];
-    double * sm_stjwjxxj = (double*)&sm_stjwjyj[1 * blockDim.x];
-    double * sm_BIC_nt = (double*)&sm_stjwjxxj[1 * blockDim.x];
-    double * sm_BIC_tr = (double*)&sm_BIC_nt[1 * blockDim.x];
-    int * sm_num_pts = (int*)&sm_BIC_tr[1 * blockDim.x];
+    double * sm_swx = (double*)&sm_sw[blockDim.x];
+    double * sm_swy = (double*)&sm_swx[blockDim.x];
+    double * sm_swxx = (double*)&sm_swy[blockDim.x];
+    double * sm_swxy = (double*)&sm_swxx[blockDim.x];
+    double * sm_swxxx = (double*)&sm_swxy[blockDim.x];
+    double * sm_swxxy = (double*)&sm_swxxx[blockDim.x];
+    double * sm_swxxxx = (double*)&sm_swxxy[blockDim.x];
+    double * sm_stjwj = (double*)&sm_swxxxx[blockDim.x];
+    double * sm_sttjwj = (double*)&sm_stjwj[blockDim.x];
+    double * sm_stjwjxj = (double*)&sm_sttjwj[blockDim.x];
+    double * sm_stjwjyj = (double*)&sm_stjwjxj[blockDim.x];
+    double * sm_stjwjxxj = (double*)&sm_stjwjyj[blockDim.x];
+    double * sm_BIC_nt = (double*)&sm_stjwjxxj[blockDim.x];
+    double * sm_BIC_tr = (double*)&sm_BIC_nt[blockDim.x];
+    int * sm_num_pts = (int*)&sm_BIC_tr[blockDim.x];  // todo check this
 
     // read the transit model into shared memory
     for (int i = 0; i < tm_size; i += blockDim.x){
@@ -444,8 +444,8 @@ __global__ void monotransit_search(
 //     extern __shared__ char sm[];
     // specify the shared memory array locations and types
     float * sm_tmodel = (float*)sm;
-    float * sm1 = (float*)&sm[tm_size + 0*blockDim.x];
-    float * sm2 = (float*)&sm[tm_size + 1*blockDim.x];
+    float * sm1 = (float*)&sm_tmodel[tm_size];
+    float * sm2 = (float*)&sm1[blockDim.x];
 
     // read the transit model into shared memory
     for (int i = 0; i < tm_size; i += blockDim.x){
@@ -662,7 +662,7 @@ __global__ void periodic_search_k1(
 //     int sm_ptr_lr = threadIdx.x;               // likelihood ratio
 //     int sm_ptr_id = threadIdx.x + blockDim.x;  // thread index
     float * sm_lr = (float*)&sm;
-    float * sm_id = (float*)&sm[blockDim.x];
+    float * sm_id = (float*)&sm_lr[blockDim.x];
 
     // nullify the arrays in shared memory
     sm_lr[threadIdx.x] = nanf(0);
@@ -802,7 +802,7 @@ __global__ void periodic_search_k2(
 //     int sm_ptr_lr = threadIdx.x;             // likelihood ratio
 //     int sm_ptr_id = threadIdx.x + blockDim.x;  // thread index
     float * sm_lr = (float*)&sm;
-    float * sm_id = (float*)&sm[blockDim.x];
+    float * sm_id = (float*)&sm_lr[blockDim.x];
 
     // nullify the arrays in shared memory
     sm_lr[threadIdx.x] = nanf(0);
