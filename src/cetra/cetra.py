@@ -30,6 +30,8 @@ _periodic_search_k1 = cu_src.get_function("periodic_search_k1")
 _periodic_search_k2 = cu_src.get_function("periodic_search_k2")
 # detrending kernels
 _detrender_k1 = cu_src.get_function("detrender_k1")
+_detrender_k2 = cu_src.get_function("detrender_k2")
+_detrender_k3 = cu_src.get_function("detrender_k3")
 
 
 class LightCurve(object):
@@ -1375,9 +1377,9 @@ class TransitDetector(object):
 
         return self.monotransit_result
 
-    def detrend(self, kernel_width, n_warps=4096, verbose=True):
+    def get_trend(self, kernel_width, n_warps=4096, verbose=True):
         """
-        Detrend the light curve, after a preliminary filtering of transit signals.
+        Obtain the light curve trend, after a preliminary filtering of transit signals.
 
         Parameters
         ----------
@@ -1419,15 +1421,27 @@ class TransitDetector(object):
         self.offset_flux_gpu = to_gpu(self.lc.offset_flux, np.float32)
         self.flux_weight_gpu = to_gpu(self.lc.flux_weight, np.float32)
 
+        # transit mask array
+        transit_mask_gpu = gpuarray.zeros(self.lc.num_points, dtype=np.int32)
+        # trend array
+        flux_trend_gpu = gpuarray.empty(self.lc.num_points, dtype=np.float32)
+
         # send the durations to the gpu
         self.durations_gpu = to_gpu(self.durations, np.float32)
 
         # block and grid sizes
         block_size = 32, 1, 1  # 1 warp per block
         grid_size = int(np.ceil(n_warps / outshape_2d[0])), int(outshape_2d[0])
-        # shared memory size - space for the transit model plus 16 elements per
+        # shared memory size -
+        #     space for the transit model as f32
+        #     + 15 elements per thread for the f64 intermediate arrays
+        #     + 1 element per thread for the i32 obs count array
         #                      thread, with 4 bytes per element
-        smem_size = int(4 * self.transit_model_size + 4 * 16 * block_size[0])
+        smem_size = int(
+            4 * self.transit_model_size
+            + 8 * 15 * block_size[0]
+            + 4 * 1 * block_size[0]
+        )
 
         # type specification
         _kernel_width = np.float32(kernel_width)
@@ -1452,6 +1466,45 @@ class TransitDetector(object):
             block=block_size, grid=grid_size, shared=smem_size
         )
 
+        # determine the BIC threshold
+        # todo user specifiable threshold
+        BIC_threshold = np.float32(
+            np.nanmedian(self.BIC_ratio_gpu.get())
+        )
+        BIC_threshold = np.float32(
+            np.nanpercentile(self.BIC_ratio_gpu.get(), 90)
+        )
+        print(BIC_threshold)
+
+        # new grid shape for kernel 2
+        grid_size2 = int(np.ceil(outshape_2d[1]/block_size[0])), int(outshape_2d[0])
+
+        # run the kernel
+        _detrender_k2(
+            _cadence, transit_mask_gpu, _n_elem,
+            self.durations_gpu, _duration_count,
+            _ts_stride_length, _ts_stride_count,
+            self.BIC_ratio_gpu, BIC_threshold,
+            block=block_size, grid=grid_size2
+        )
+
+        # reweight in-transit points to zero
+        mask = transit_mask_gpu.get()
+        new_weights = self.lc.flux_weight.copy()
+        new_weights[mask == 1] = 0.0
+        # send the new weights to the gpu
+        new_weights_gpu = to_gpu(new_weights, np.float32)
+
+        # new grid shape for kernel 3
+        grid_size3 = int(np.ceil(_n_elem/block_size[0])), int(1)
+
+        # run the kernel
+        _detrender_k3(
+            self.offset_time_gpu, self.offset_flux_gpu, new_weights_gpu,
+            _kernel_width, _cadence, _n_elem, flux_trend_gpu,
+            block=block_size, grid=grid_size3
+        )
+
         # make sure the operation is finished before recording the time
         # (device calls are asynchronous)
         drv.Context.synchronize()
@@ -1461,7 +1514,7 @@ class TransitDetector(object):
         if verbose:
             print(f"completed in {t1 - t0:.3f} seconds")
 
-        return self.BIC_ratio_gpu.get()
+        return self.BIC_ratio_gpu.get(), mask, flux_trend_gpu.get()
 
 
 if __name__ == "__main__":
