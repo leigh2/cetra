@@ -13,6 +13,7 @@ class Constants(object):
 
 def interpolate_model(input_model, target_samples, kind='linear'):
     """
+    CHECKED
     Resample an input model using interpolation
 
     Parameters
@@ -31,13 +32,15 @@ def interpolate_model(input_model, target_samples, kind='linear'):
     """
     i1d = interp1d(
         np.linspace(0, 1, len(input_model)), input_model,
-        kind=kind, copy=True, bounds_error=True, assume_sorted=True
+        kind=kind, copy=True, bounds_error=False, fill_value=1.0,
+        assume_sorted=True
     )
-    return i1d(np.linspace(0, 1, target_samples))
+    return i1d, i1d(np.linspace(0, 1, target_samples))
 
 
 def nn_model_error(samples, input_model):
     """
+    CHECKED
     Return the maximum nearest-neighbour error in the model for a given
     model size.
 
@@ -53,7 +56,7 @@ def nn_model_error(samples, input_model):
     The maximum fractional error on a transit model of the input size
     """
     s_inter = (samples-1)*2 + 1
-    m_all = interpolate_model(input_model, s_inter)  # todo check if should be '1 - '
+    _, m_all = interpolate_model(input_model, s_inter)  # todo check if should be '1 - '
     m_orig = m_all[0::2]
     m_inter = m_all[1::2]
     frac_diff = m_orig[1:] - m_inter
@@ -151,6 +154,7 @@ def get_bounds(array, index, value, index_offset=1):
 
 def duration_grid(min_duration=0.02, max_duration=1.0, log_step=1.1):
     """
+    CHECKED
     Generate the duration grid.
 
     Parameters

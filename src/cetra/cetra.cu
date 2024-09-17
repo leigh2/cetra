@@ -3,54 +3,55 @@
 // open the shared memory array
 extern __shared__ char sm[];
 
-__device__ void warpSumReductionf(volatile float* sdata, int tid, int offset) {
-    //sdata[offset + tid] += sdata[offset + tid + 32];
-    sdata[offset + tid] += sdata[offset + tid + 16];
-    sdata[offset + tid] += sdata[offset + tid + 8];
-    sdata[offset + tid] += sdata[offset + tid + 4];
-    sdata[offset + tid] += sdata[offset + tid + 2];
-    sdata[offset + tid] += sdata[offset + tid + 1];
+__device__ void warpSumReductionf(volatile float* sdata, int tid) {
+    //sdata[tid] += sdata[tid + 32];
+    sdata[tid] += sdata[tid + 16];
+    sdata[tid] += sdata[tid + 8];
+    sdata[tid] += sdata[tid + 4];
+    sdata[tid] += sdata[tid + 2];
+    sdata[tid] += sdata[tid + 1];
 }
 
-__device__ void warpSumReductiond(volatile double* sdata, int tid, int offset) {
-    //sdata[offset + tid] += sdata[offset + tid + 32];
-    sdata[offset + tid] += sdata[offset + tid + 16];
-    sdata[offset + tid] += sdata[offset + tid + 8];
-    sdata[offset + tid] += sdata[offset + tid + 4];
-    sdata[offset + tid] += sdata[offset + tid + 2];
-    sdata[offset + tid] += sdata[offset + tid + 1];
+__device__ void warpSumReductiond(volatile double* sdata, int tid) {
+    //sdata[tid] += sdata[tid + 32];
+    sdata[tid] += sdata[tid + 16];
+    sdata[tid] += sdata[tid + 8];
+    sdata[tid] += sdata[tid + 4];
+    sdata[tid] += sdata[tid + 2];
+    sdata[tid] += sdata[tid + 1];
 }
 
-__device__ void warpSumReductioni(volatile int* sdata, int tid, int offset) {
-    //sdata[offset + tid] += sdata[offset + tid + 32];
-    sdata[offset + tid] += sdata[offset + tid + 16];
-    sdata[offset + tid] += sdata[offset + tid + 8];
-    sdata[offset + tid] += sdata[offset + tid + 4];
-    sdata[offset + tid] += sdata[offset + tid + 2];
-    sdata[offset + tid] += sdata[offset + tid + 1];
+__device__ void warpSumReductioni(volatile int* sdata, int tid) {
+    //sdata[tid] += sdata[tid + 32];
+    sdata[tid] += sdata[tid + 16];
+    sdata[tid] += sdata[tid + 8];
+    sdata[tid] += sdata[tid + 4];
+    sdata[tid] += sdata[tid + 2];
+    sdata[tid] += sdata[tid + 1];
 }
 
 // detrender - get BICs
 __global__ void detrender_k1(
-    const float * time,  // offset time array
-    const float * flux,  // offset flux array
-    const float * wght,  // offset flux weight array
-    const int kernel_half_width,  // half-width of the detrending kernel in samples
+    const double * time,  // offset time array
+    const double * flux,  // offset flux array
+    const double * wght,  // offset flux weight array
+    const int kernel_half_width,  // half-width of the detection kernel in samples
     const float min_depth_ppm,  // the minimum transit depth to consider
     const int min_obs_in_window,  // the minimum acceptable number of observations in the window
     const float cadence,  // the cadence of the light curve
     const int lc_size,  // number of light curve elements
-    const float * tmodel,  // offset flux transit model array
+    const double * tmodel,  // offset flux transit model array
     const int tm_size,  // number of transit model elements
     const float * durations,  // the duration array
     const int n_durations,  // the number of durations
     const float t0_stride_length,  // the number of reference times per duration
     const int t0_stride_count,  // number of reference time strides
-    float * BIC_ratio,  // the BIC ratio array (to be filled)
+    float * delta_BIC,  // the BIC difference array (to be filled)
     float * ll_tr  // the log-likelihood of the transit model (to be filled)
 ){
     // specify the shared memory array locations and types
-    float * sm_tmodel = (float*)sm;
+    // todo: could set these with metaprogramming, maybe there is performance to be gained...
+    double * sm_tmodel = (double*)sm;
     double * sm_sw = (double*)&sm_tmodel[tm_size];
     double * sm_swx = (double*)&sm_sw[blockDim.x];
     double * sm_swy = (double*)&sm_swx[blockDim.x];
@@ -64,9 +65,9 @@ __global__ void detrender_k1(
     double * sm_stjwjxj = (double*)&sm_sttjwj[blockDim.x];
     double * sm_stjwjyj = (double*)&sm_stjwjxj[blockDim.x];
     double * sm_stjwjxxj = (double*)&sm_stjwjyj[blockDim.x];
-    double * sm_BIC_nt = (double*)&sm_stjwjxxj[blockDim.x];
-    double * sm_BIC_tr = (double*)&sm_BIC_nt[blockDim.x];
-    int * sm_num_pts = (int*)&sm_BIC_tr[blockDim.x];  // todo check this
+    double * sm_ll_nt = (double*)&sm_stjwjxxj[blockDim.x];
+    double * sm_ll_tr = (double*)&sm_ll_nt[blockDim.x];
+    int * sm_num_pts = (int*)&sm_ll_tr[blockDim.x];  // todo check this
 
     // read the transit model into shared memory
     for (int i = 0; i < tm_size; i += blockDim.x){
@@ -82,19 +83,11 @@ __global__ void detrender_k1(
     if (dur_id >= n_durations) return;
     const float duration = durations[dur_id];
 
-    // compute the width of the detrending boundary in samples
-//     int dt_border = lrintf(ceilf((0.5 * (kernel_width - duration)) / cadence));
-    // minimum of 3* the duration as a border
-//     int min_border = lrintf(3.0*duration/cadence);
-//     dt_border = max(dt_border, min_border);
-
     // Stride through the reference time steps
     // Each block reads the transit model from global to shared memory once.
     // Striding through the reference time steps means each block computes the likelihood
     // ratio of multiple reference time steps, but it still only reads the transit model
     // once, so the total number of reads from global memory is reduced.
-    // Testing indicates this optimisation halves the compute time for a 2yr
-    // light curve at 10 min cadence.
     for (int s = 0; s < t0_stride_count; s += gridDim.x) {
         // t0 number
         int t0_num = blockIdx.x + s;
@@ -121,8 +114,8 @@ __global__ void detrender_k1(
         sm_stjwjxj[threadIdx.x] = 0.0;
         sm_stjwjyj[threadIdx.x] = 0.0;
         sm_stjwjxxj[threadIdx.x] = 0.0;
-        sm_BIC_nt[threadIdx.x] = 0.0;
-        sm_BIC_tr[threadIdx.x] = 0.0;
+        sm_ll_nt[threadIdx.x] = 0.0;
+        sm_ll_tr[threadIdx.x] = 0.0;
         sm_num_pts[threadIdx.x] = 0;
 
         // syncthreads needed in cases where block size > 32
@@ -131,9 +124,9 @@ __global__ void detrender_k1(
         // compute the indices of the first and last in-transit points
         int itr_frst_idx = lrintf(ceilf(ts / cadence));
         int itr_last_idx = lrintf(floorf((ts+duration) / cadence));
-        // compute the indices of the first and last kernel points
-        int dtr_frst_idx = lrintf(t0 / cadence) - kernel_half_width;  //itr_frst_idx - dt_border;
-        int dtr_last_idx = lrintf(t0 / cadence) + kernel_half_width;  //itr_last_idx + dt_border;
+        // compute the indices of the first and last detection kernel points
+        int dtr_frst_idx = lrintf(t0 / cadence) - kernel_half_width;
+        int dtr_last_idx = lrintf(t0 / cadence) + kernel_half_width;
         // clip first indices to start of light curve
         itr_frst_idx = max(itr_frst_idx, 0);
         dtr_frst_idx = max(dtr_frst_idx, 0);
@@ -146,76 +139,80 @@ __global__ void detrender_k1(
         // loop over the light curve in the detrending window
         for (int i = 0; i <= dtr_size; i += blockDim.x){
             int lc_idx = dtr_frst_idx + i + threadIdx.x;
+
+            // it shouldn't be because we clipped but just in case...
+            if (lc_idx < 0) continue;
             if (lc_idx >= lc_size) break;
 
             // skip if the light curve point has infinite error (i.e. zero weight)
-            double w = (double) wght[lc_idx];
-            if (w == 0.0) continue;
+            double lc_w = (double) wght[lc_idx];
+            if (lc_w == 0.0) continue;
 
             // grab the values of time and flux to make the following code more readable
             // (assume the compiler is smart)
-            double t = (double) time[lc_idx];
-            double tref = t - t0;
-            double f = (double) flux[lc_idx];
+            double lc_t = (double) time[lc_idx];
+            double lc_f = (double) flux[lc_idx];
+            // we don't want to use the absolute value of time because the floating
+            // point errors make a difference when you take the fourth power...
+            double delta_t = lc_t - t0;
 
             // accumulate various values
-            sm_sw[threadIdx.x] += w;
-            sm_swx[threadIdx.x] += w * tref;
-            sm_swy[threadIdx.x] += w * f;
-            sm_swxx[threadIdx.x] += w * tref * tref;
-            sm_swxy[threadIdx.x] += w * tref * f;
-            sm_swxxx[threadIdx.x] += w * tref * tref * tref;
-            sm_swxxy[threadIdx.x] += w * tref * tref * f;
-            sm_swxxxx[threadIdx.x] += w * tref * tref * tref * tref;
+            sm_sw[threadIdx.x] += lc_w;
+            sm_swx[threadIdx.x] += lc_w * delta_t;
+            sm_swy[threadIdx.x] += lc_w * lc_f;
+            sm_swxx[threadIdx.x] += lc_w * delta_t * delta_t;
+            sm_swxy[threadIdx.x] += lc_w * delta_t * lc_f;
+            sm_swxxx[threadIdx.x] += lc_w * delta_t * delta_t * delta_t;
+            sm_swxxy[threadIdx.x] += lc_w * delta_t * delta_t * lc_f;
+            sm_swxxxx[threadIdx.x] += lc_w * delta_t * delta_t * delta_t * delta_t;
             sm_num_pts[threadIdx.x] += 1;
 
             // is this point in the transit window?
             if ((lc_idx >= itr_frst_idx) & (lc_idx <= itr_last_idx)) {
                 // find the nearest model point index
-                int model_idx = lrintf(( t - ts ) / duration * tm_size);
+                int model_idx = lrintf(( lc_t - ts ) / duration * tm_size);
                 // just in case we're out of bounds:
                 if ((model_idx < 0) || (model_idx >= tm_size)) continue;
                 double modval = (double) sm_tmodel[model_idx];
 
                 // accumulate some additional values
-                sm_stjwj[threadIdx.x] += w * modval;
-                sm_sttjwj[threadIdx.x] += w * modval * modval;
-                sm_stjwjxj[threadIdx.x] += w * modval * tref;
-                sm_stjwjyj[threadIdx.x] += w * modval * f;
-                sm_stjwjxxj[threadIdx.x] += w * modval * tref * tref;
+                sm_stjwj[threadIdx.x] += lc_w * modval;
+                sm_sttjwj[threadIdx.x] += lc_w * modval * modval;
+                sm_stjwjxj[threadIdx.x] += lc_w * modval * delta_t;
+                sm_stjwjyj[threadIdx.x] += lc_w * modval * lc_f;
+                sm_stjwjxxj[threadIdx.x] += lc_w * modval * delta_t * delta_t;
             }
         }
 
         // syncthreads needed in cases where block size > 32
         __syncthreads();
 
-        // count the number of points first, if there were none we can stop now
-        warpSumReductioni(sm_num_pts, threadIdx.x, 0);
+        // count the number of points first, if there were none we can stop here
+        warpSumReductioni(sm_num_pts, threadIdx.x);
         // syncthreads needed in cases where block size > 32
         __syncthreads();
         // pull out the value and skip the rest of the loop if too few observations
         int num_pts = sm_num_pts[0];
         if (num_pts < min_obs_in_window){
-            BIC_ratio[arr2d_ptr] = nanf(0);
+            delta_BIC[arr2d_ptr] = nanf(0);
             ll_tr[arr2d_ptr] = nanf(0);
             continue;
         };
 
-
         // sum reduction of the additional arrays in shared memory
-        warpSumReductiond(sm_sw, threadIdx.x, 0);
-        warpSumReductiond(sm_swx, threadIdx.x, 0);
-        warpSumReductiond(sm_swy, threadIdx.x, 0);
-        warpSumReductiond(sm_swxx, threadIdx.x, 0);
-        warpSumReductiond(sm_swxy, threadIdx.x, 0);
-        warpSumReductiond(sm_swxxx, threadIdx.x, 0);
-        warpSumReductiond(sm_swxxy, threadIdx.x, 0);
-        warpSumReductiond(sm_swxxxx, threadIdx.x, 0);
-        warpSumReductiond(sm_stjwj, threadIdx.x, 0);
-        warpSumReductiond(sm_sttjwj, threadIdx.x, 0);
-        warpSumReductiond(sm_stjwjxj, threadIdx.x, 0);
-        warpSumReductiond(sm_stjwjyj, threadIdx.x, 0);
-        warpSumReductiond(sm_stjwjxxj, threadIdx.x, 0);
+        warpSumReductiond(sm_sw, threadIdx.x);
+        warpSumReductiond(sm_swx, threadIdx.x);
+        warpSumReductiond(sm_swy, threadIdx.x);
+        warpSumReductiond(sm_swxx, threadIdx.x);
+        warpSumReductiond(sm_swxy, threadIdx.x);
+        warpSumReductiond(sm_swxxx, threadIdx.x);
+        warpSumReductiond(sm_swxxy, threadIdx.x);
+        warpSumReductiond(sm_swxxxx, threadIdx.x);
+        warpSumReductiond(sm_stjwj, threadIdx.x);
+        warpSumReductiond(sm_sttjwj, threadIdx.x);
+        warpSumReductiond(sm_stjwjxj, threadIdx.x);
+        warpSumReductiond(sm_stjwjyj, threadIdx.x);
+        warpSumReductiond(sm_stjwjxxj, threadIdx.x);
 
         // syncthreads needed in cases where block size > 32
         __syncthreads();
@@ -235,6 +232,16 @@ __global__ void detrender_k1(
         double stjwjyj = sm_stjwjyj[0];
         double stjwjxxj = sm_stjwjxxj[0];
 
+        /*
+        B1 is the quadratic coefficient
+        B2 is the linear coefficient
+        B3 is the constant coefficient
+        B4 is the transit model depth (not applicable to the non-transit model)
+        i.e.
+        F_no-transit = B1*t^2 + B2*t + B3
+        F_transit    = B1*t^2 + B2*t + B3 + B4*tmodel
+        */
+
         // calculate the least squares parameters for the transit model
         double B1_tr = (stjwj*stjwj*swxx*swxxy - stjwj*stjwj*swxxx*swxy - 2*stjwj*stjwjxj*swx*swxxy + stjwj*stjwjxj*swxx*swxy + stjwj*stjwjxj*swxxx*swy + stjwj*stjwjxxj*swx*swxy - stjwj*stjwjxxj*swxx*swy + stjwj*stjwjyj*swx*swxxx - stjwj*stjwjyj*swxx*swxx + stjwjxj*stjwjxj*sw*swxxy - stjwjxj*stjwjxj*swxx*swy - stjwjxj*stjwjxxj*sw*swxy + stjwjxj*stjwjxxj*swx*swy - stjwjxj*stjwjyj*sw*swxxx + stjwjxj*stjwjyj*swx*swxx + stjwjxxj*stjwjyj*sw*swxx - stjwjxxj*stjwjyj*swx*swx - sttjwj*sw*swxx*swxxy + sttjwj*sw*swxxx*swxy + sttjwj*swx*swx*swxxy - sttjwj*swx*swxx*swxy - sttjwj*swx*swxxx*swy + sttjwj*swxx*swxx*swy)/(stjwj*stjwj*swxx*swxxxx - stjwj*stjwj*swxxx*swxxx - 2*stjwj*stjwjxj*swx*swxxxx + 2*stjwj*stjwjxj*swxx*swxxx + 2*stjwj*stjwjxxj*swx*swxxx - 2*stjwj*stjwjxxj*swxx*swxx + stjwjxj*stjwjxj*sw*swxxxx - stjwjxj*stjwjxj*swxx*swxx - 2*stjwjxj*stjwjxxj*sw*swxxx + 2*stjwjxj*stjwjxxj*swx*swxx + stjwjxxj*stjwjxxj*sw*swxx - stjwjxxj*stjwjxxj*swx*swx - sttjwj*sw*swxx*swxxxx + sttjwj*sw*swxxx*swxxx + sttjwj*swx*swx*swxxxx - 2*sttjwj*swx*swxx*swxxx + sttjwj*swxx*swxx*swxx);
         double B2_tr = (-stjwj*stjwj*swxxx*swxxy + stjwj*stjwj*swxxxx*swxy + stjwj*stjwjxj*swxx*swxxy - stjwj*stjwjxj*swxxxx*swy + stjwj*stjwjxxj*swx*swxxy - 2*stjwj*stjwjxxj*swxx*swxy + stjwj*stjwjxxj*swxxx*swy - stjwj*stjwjyj*swx*swxxxx + stjwj*stjwjyj*swxx*swxxx - stjwjxj*stjwjxxj*sw*swxxy + stjwjxj*stjwjxxj*swxx*swy + stjwjxj*stjwjyj*sw*swxxxx - stjwjxj*stjwjyj*swxx*swxx + stjwjxxj*stjwjxxj*sw*swxy - stjwjxxj*stjwjxxj*swx*swy - stjwjxxj*stjwjyj*sw*swxxx + stjwjxxj*stjwjyj*swx*swxx + sttjwj*sw*swxxx*swxxy - sttjwj*sw*swxxxx*swxy - sttjwj*swx*swxx*swxxy + sttjwj*swx*swxxxx*swy + sttjwj*swxx*swxx*swxy - sttjwj*swxx*swxxx*swy)/(stjwj*stjwj*swxx*swxxxx - stjwj*stjwj*swxxx*swxxx - 2*stjwj*stjwjxj*swx*swxxxx + 2*stjwj*stjwjxj*swxx*swxxx + 2*stjwj*stjwjxxj*swx*swxxx - 2*stjwj*stjwjxxj*swxx*swxx + stjwjxj*stjwjxj*sw*swxxxx - stjwjxj*stjwjxj*swxx*swxx - 2*stjwjxj*stjwjxxj*sw*swxxx + 2*stjwjxj*stjwjxxj*swx*swxx + stjwjxxj*stjwjxxj*sw*swxx - stjwjxxj*stjwjxxj*swx*swx - sttjwj*sw*swxx*swxxxx + sttjwj*sw*swxxx*swxxx + sttjwj*swx*swx*swxxxx - 2*sttjwj*swx*swxx*swxxx + sttjwj*swxx*swxx*swxx);
@@ -247,83 +254,84 @@ __global__ void detrender_k1(
         double B3_nt = (swx*swxxx*swxxy - swx*swxxxx*swxy - swxx*swxx*swxxy + swxx*swxxx*swxy + swxx*swxxxx*swy - swxxx*swxxx*swy)/(sw*swxx*swxxxx - sw*swxxx*swxxx - swx*swx*swxxxx + 2*swx*swxx*swxxx - swxx*swxx*swxx);
 
         // require some minimum depth
-        if (B4_tr < min_depth_ppm * 1e-6) {
-            BIC_ratio[arr2d_ptr] = nanf(0);
+        if (B4_tr < (min_depth_ppm * 1e-6)) {
+            delta_BIC[arr2d_ptr] = nanf(0);
             ll_tr[arr2d_ptr] = nanf(0);
             continue;
         }
 
-//         BIC_ratio[arr2d_ptr] = B1_tr*t0*t0 + B2_tr*t0 + B3_tr;
-//         ll_tr[arr2d_ptr] = B1_nt*t0*t0 + B2_nt*t0 + B3_nt;
-//         continue;
-
         // now loop through the detrending window again and calculate the log-likelihood
         for (int i = 0; i <= dtr_size; i += blockDim.x){
             int lc_idx = dtr_frst_idx + i + threadIdx.x;
+
+            // it shouldn't be because we clipped but just in case...
+            if (lc_idx < 0) continue;
             if (lc_idx >= lc_size) break;
 
             // skip if the light curve point has infinite error (i.e. zero weight)
-            double w = (double) wght[lc_idx];
-            if (w == 0.0f) continue;
+            double lc_w = (double) wght[lc_idx];
+            if (lc_w == 0.0) continue;
 
             // grab the values of time and flux to make the following code more readable (assume the compiler is smart)
-            double t = (double) time[lc_idx];
-            double tref = t - t0;
-            double f = (double) flux[lc_idx];
+            double lc_t = (double) time[lc_idx];
+            double lc_f = (double) flux[lc_idx];
+            // we don't want to use the absolute value of time because the floating
+            // point errors make a difference when you take the fourth power...
+            double delta_t = lc_t - t0;
 
             // compute the best fit models for this point
-            double tr_flux = B1_tr * tref * tref + B2_tr * tref + B3_tr;  // transit
-            double nt_flux = B1_nt * tref * tref + B2_nt * tref + B3_nt;  // non-transit
+            double tr_flux = B1_tr * delta_t * delta_t + B2_tr * delta_t + B3_tr;  // transit
+            double nt_flux = B1_nt * delta_t * delta_t + B2_nt * delta_t + B3_nt;  // non-transit
 
             // is this point in the transit window?
             if ((lc_idx >= itr_frst_idx) & (lc_idx <= itr_last_idx)) {
                 // find the nearest model point index
-                int model_idx = lrintf(( t - ts ) / duration * tm_size);
+                int model_idx = lrintf(( lc_t - ts ) / duration * tm_size);
                 // just in case we're out of bounds:
                 if ((model_idx < 0) || (model_idx >= tm_size)) continue;
                 double modval = (double) sm_tmodel[model_idx];
 
-                // incorporate the transit model
+                // incorporate the transit model where appropriate
                 tr_flux += B4_tr * modval;
             }
 
-            // log-likelihood of in-transit points
-            double tr_resid = tr_flux - f;
-            double nt_resid = nt_flux - f;
-            double e_term = - 0.5 * log(2 * M_PI / w);
-            sm_BIC_tr[threadIdx.x] += (-0.5 * tr_resid * tr_resid * w) + e_term;
-            sm_BIC_nt[threadIdx.x] += (-0.5 * nt_resid * nt_resid * w) + e_term;
+            // accumulate the log-likelihood of the data for the two models in shared memory
+            double tr_resid = tr_flux - lc_f;
+            double nt_resid = nt_flux - lc_f;
+            double e_term = - 0.5 * log(2.0 * M_PI / lc_w);
+            sm_ll_tr[threadIdx.x] += (-0.5 * tr_resid * tr_resid * lc_w) + e_term;
+            sm_ll_nt[threadIdx.x] += (-0.5 * nt_resid * nt_resid * lc_w) + e_term;
         }
 
         // syncthreads needed in cases where block size > 32
         __syncthreads();
 
         // sum reduction of the BIC arrays in shared memory
-        warpSumReductiond(sm_BIC_tr, threadIdx.x, 0);
-        warpSumReductiond(sm_BIC_nt, threadIdx.x, 0);
+        warpSumReductiond(sm_ll_tr, threadIdx.x);
+        warpSumReductiond(sm_ll_nt, threadIdx.x);
 
         // syncthreads needed in cases where block size > 32
         __syncthreads();
 
-        // store the BIC ratio in the output array
-        double BIC_tr = 5 * log(1.0 * num_pts) - 2 * sm_BIC_tr[0];
-        double BIC_nt = 4 * log(1.0 * num_pts) - 2 * sm_BIC_nt[0];
-        // output
-        BIC_ratio[arr2d_ptr] = (float) BIC_nt - BIC_tr;
-        ll_tr[arr2d_ptr] = (float) sm_BIC_tr[0];
+        // compute the Bayesian information criteria
+        double BIC_tr = 5 * log(1.0 * num_pts) - 2 * sm_ll_tr[0];
+        double BIC_nt = 4 * log(1.0 * num_pts) - 2 * sm_ll_nt[0];
+        // record the BIC difference and the log-likelihood of the transit model
+        delta_BIC[arr2d_ptr] = (float) BIC_nt - BIC_tr;
+        ll_tr[arr2d_ptr] = (float) sm_ll_tr[0];
     }
 }
 
 // detrender - get trend of light curve
-__global__ void detrender_k5(
-    const float * time,  // offset time array
-    const float * flux,  // offset flux array
-    const float * wght,  // offset flux weight array
-    const float * model,  // transits model array
+__global__ void detrender_k2(
+    const double * time,  // offset time array
+    const double * flux,  // offset flux array
+    const double * wght,  // offset flux weight array
+    const double * model,  // transits model array
     const int kernel_half_width,  // width of the detrending kernel in samples
     const int min_obs_in_window,  // the minimum acceptable number of observations in the window
     const int lc_size,  // number of light curve elements
-    float * trend,  // the output trend array
+    double * trend,  // the output trend array
     int * npts  //
 
 ){
@@ -514,8 +522,8 @@ __global__ void monotransit_search(
         __syncthreads();
 
         // sum reduction of the second and third arrays in shared memory
-        warpSumReductionf(sm1, threadIdx.x, 0);
-        warpSumReductionf(sm2, threadIdx.x, 0);
+        warpSumReductionf(sm1, threadIdx.x);
+        warpSumReductionf(sm2, threadIdx.x);
 
         // calculate the maximum likelihood transit depth
         float wav_depth = sm1[0] / sm2[0];
@@ -570,7 +578,7 @@ __global__ void monotransit_search(
         __syncthreads();
 
         // sum reduction of the second array in shared memory
-        warpSumReductionf(sm1, threadIdx.x, 0);
+        warpSumReductionf(sm1, threadIdx.x);
 
         // store the likelihood ratio in the output array
         like_ratio[arr2d_ptr] = sm1[0];
@@ -580,9 +588,9 @@ __global__ void monotransit_search(
 // light curve resampling - stage 1
 __global__ void resample_k1(
     const double * time,  // input light curve observation time array
-    const double cadence,  // desired output cadence
     const double * flux,  // input light curve offset flux array
     const double * ferr,  // input light curve offset flux error array
+    const double cadence,  // desired output cadence
     const int n_elem,  // number of elements in input light curve
     double * sum_of_weighted_flux,  // array of sum(f*w)
     double * sum_of_weights  // array of sum(w)

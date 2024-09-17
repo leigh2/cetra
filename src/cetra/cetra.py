@@ -30,7 +30,7 @@ _periodic_search_k1 = cu_src.get_function("periodic_search_k1")
 _periodic_search_k2 = cu_src.get_function("periodic_search_k2")
 # detrending kernels
 _detrender_k1 = cu_src.get_function("detrender_k1")
-_detrender_k5 = cu_src.get_function("detrender_k5")
+_detrender_k2 = cu_src.get_function("detrender_k2")
 
 
 class LightCurve(object):
@@ -39,6 +39,7 @@ class LightCurve(object):
     """
     def __init__(self, times, fluxes, flux_errors):
         """
+        CHECKED
         Basic light curve validation and class instance initialisation.
 
         Parameters
@@ -56,7 +57,7 @@ class LightCurve(object):
         if len(flux_errors) != len(times):
             raise RuntimeError("len(flux_errors) != len(times)")
 
-        # make sure the input arrays contain no NaNs
+        # make sure the input time and flux arrays contain no NaNs
         if np.any(np.isnan(times)):
             raise ValueError("one or more time values is NaN")
         if np.any(np.isnan(flux_errors)):
@@ -64,9 +65,10 @@ class LightCurve(object):
 
         # NaN fluxes are allowed - but they must have infinite error
         if np.any(np.logical_and(np.isnan(fluxes), ~np.isinf(flux_errors))):
-            raise ValueError("One or more flux values with finite error is NaN. "
-                             "NaN fluxes are allowed, but they must have infinite "
-                             "error.")
+            raise ValueError(
+                "One or more flux values with finite error is NaN. NaN fluxes "
+                "are allowed, but they must have infinite error."
+            )
 
         # make sure the fluxes and errors are valid
         # zero flux is valid, zero flux error is not
@@ -214,6 +216,7 @@ class LightCurve(object):
 
     def resample(self, new_cadence, cuda_blocksize=1024):
         """
+        CHECKED
         Resample the light curve at a new cadence.
 
         Parameters
@@ -234,7 +237,7 @@ class LightCurve(object):
             raise ValueError("New cadence must be finite and greater than zero")
 
         # generate the new time sequence
-        new_time = np.arange(
+        new_times = np.arange(
             start=self.time.min(),
             stop=self.time.max()+new_cadence,
             step=new_cadence
@@ -245,14 +248,14 @@ class LightCurve(object):
         _flux = to_gpu(self.offset_flux, np.float64)
         _ferr = to_gpu(self.offset_flux_error, np.float64)
         # initialise output arrays on the gpu
-        _rflux_out = gpuarray.zeros(new_time.size, dtype=np.float64)
-        _err_out = gpuarray.zeros(new_time.size, dtype=np.float64)
-        _sum_fw = gpuarray.zeros(new_time.size, dtype=np.float64)
+        _rflux_out = gpuarray.zeros(new_times.size, dtype=np.float64)
+        _err_out = gpuarray.zeros(new_times.size, dtype=np.float64)
+        _sum_fw = gpuarray.zeros(new_times.size, dtype=np.float64)
         _sum_w = _err_out  # we can reuse this array if we're careful!
         # type specification
         _cadence = np.float64(new_cadence)
         _n_elem = np.int32(self.num_points)
-        _n_elem_out = np.int32(new_time.size)
+        _n_elem_out = np.int32(new_times.size)
 
         # set the cuda block and grid sizes
         _blocksize = (cuda_blocksize, 1, 1)
@@ -261,7 +264,7 @@ class LightCurve(object):
 
         # run the kernel to sum the fluxes and their weights
         _resample_k1(
-            _time, _cadence, _flux, _ferr, _n_elem, _sum_fw, _sum_w,
+            _time, _flux, _ferr, _cadence, _n_elem, _sum_fw, _sum_w,
             block=_blocksize, grid=_gridsize1
         )
         # now run the division kernel
@@ -270,7 +273,7 @@ class LightCurve(object):
             block=_blocksize, grid=_gridsize2
         )
 
-        return LightCurve(new_time, _rflux_out.get(), _err_out.get())
+        return LightCurve(new_times, _rflux_out.get(), _err_out.get())
 
 
 @dataclass
@@ -739,7 +742,7 @@ class TransitDetector(object):
     """
 
     def __init__(
-            self, times, flux, flux_error, durations=None,
+            self, times, fluxes, flux_errors, durations=None,
             min_duration=0.02, max_duration=1.0, duration_log_step=1.1,
             t0_stride_fraction=None, t0_stride_length=None,
             resample_cadence=None,
@@ -747,15 +750,16 @@ class TransitDetector(object):
             verbose=True
     ):
         """
+        CHECKED
         Initialise the transit detector.
 
         Parameters
         ----------
         times : ndarray
             Sequence of light curve observation time points in days.
-        flux : ndarray
+        fluxes : ndarray
             Sequence of light curve relative (to baseline) flux points.
-        flux_error : ndarray
+        flux_errors : ndarray
             Sequence of light curve relative (to baseline) flux error points.
         durations : array-like, optional
             User-specified duration grid. If not provided, the module computes
@@ -806,7 +810,7 @@ class TransitDetector(object):
             If True (the default), reports various messages.
         """
         # validate the input light curve
-        self.lc_in = LightCurve(times, flux, flux_error)
+        self.lc_in = LightCurve(times, fluxes, flux_errors)
 
         if verbose:
             # report the input light curve cadence
@@ -856,14 +860,15 @@ class TransitDetector(object):
             print(f"{self.duration_count} durations, "
                   f"{self.durations[0]:.2f} -> {self.durations[-1]:.2f} days")
 
-        # Pre-pad the light curve with null data to make simpler the algorithm
-        # that searches for transits that begin before the data. This requires
-        # a regular observing cadence, another benefit of our earlier
-        # resampling operation.
+        # Pad the light curve with null data to make simpler the algorithm
+        # that searches for transits that begin before or end after the data.
+        # This requires a regular observing cadence, another benefit of our
+        # earlier resampling operation.
+        # pad by half of the maximum duration
         num_prepad = int(np.ceil(0.5 * np.max(self.durations) / self.lc.cadence))
-        self.lc = self.lc.pad(num_prepad, 0)
+        self.lc = self.lc.pad(num_prepad, num_prepad)
         if verbose:
-            print(f"prepended {num_prepad} null points to the light curve")
+            print(f"padded {num_prepad} null points to the light curve at both ends")
 
         if isinstance(transit_model, list) or isinstance(transit_model, np.ndarray):
             if verbose:
@@ -889,7 +894,11 @@ class TransitDetector(object):
                 )
 
         # generate the transit model
-        self.transit_model = interpolate_model(
+        # self.transit_model_function is a 1d interpolator for the transit
+        # model with x values between 0 and 1
+        # self.transit_model is a 1d array of the transit model with a given
+        # number of evenly spaced samples
+        self.transit_model_function, self.transit_model = interpolate_model(
             self.input_model, transit_model_size
         )
         # store the transit model size as an instance variable
@@ -898,7 +907,8 @@ class TransitDetector(object):
         # to save a lot of 1-f transit model operations later, lets do it now
         self.offset_transit_model = 1.0 - self.transit_model
         # send the offset transit model to the gpu
-        self.offset_transit_model_gpu = to_gpu(self.offset_transit_model, np.float32)
+        self.offset_transit_model_gpu_f4 = to_gpu(self.offset_transit_model, np.float32)
+        self.offset_transit_model_gpu_f8 = to_gpu(self.offset_transit_model, np.float64)
 
         if verbose:
             # report the transit model size
@@ -926,10 +936,21 @@ class TransitDetector(object):
         if verbose:
             print(f"t0 stride length: {self.t0_stride_length * Constants.seconds_per_day:.3f} seconds")
         # generate the grid of t0s
+        # we go from the start to the end of the PADDED light curve
         self.t0s = np.arange(0, self.lc.offset_time[-1], self.t0_stride_length)
         self.num_t0_strides = self.t0s.size
         if verbose:
             print(f"{self.num_t0_strides:d} t0 strides")
+
+        # send the light curve to the gpu
+        # we're (probably) not short on vmem so send at single and double
+        # precision since both are usually needed by different kernels
+        self.offset_time_gpu_f4 = to_gpu(self.lc.offset_time, np.float32)
+        self.offset_time_gpu_f8 = to_gpu(self.lc.offset_time, np.float64)
+        self.offset_flux_gpu_f4 = to_gpu(self.lc.offset_flux, np.float32)
+        self.offset_flux_gpu_f8 = to_gpu(self.lc.offset_flux, np.float64)
+        self.flux_weight_gpu_f4 = to_gpu(self.lc.flux_weight, np.float32)
+        self.flux_weight_gpu_f8 = to_gpu(self.lc.flux_weight, np.float64)
 
         # initialise instance variables that get populated later
         self.periods = None
@@ -1340,7 +1361,7 @@ class TransitDetector(object):
         # run the kernel
         _monotransit_search(
             self.offset_time_gpu, self.offset_flux_gpu, self.flux_weight_gpu, _cadence, _n_elem,
-            self.offset_transit_model_gpu, _tm_size,
+            self.offset_transit_model_gpu_f4, _tm_size,
             self.durations_gpu, _duration_count,
             _t0_stride_length, _t0_stride_count,
             self.like_ratio_2d_gpu, self.depth_2d_gpu, self.var_depth_2d_gpu,
@@ -1378,8 +1399,15 @@ class TransitDetector(object):
 
         return self.monotransit_result
 
-    def get_trend(self, detection_kernel_width, detrending_kernel_width, min_depth_ppm=10.0, min_obs_count=20, n_warps=4096, verbose=True):
+    def get_trend(
+            self,
+            detection_kernel_width, detrending_kernel_width,
+            min_depth_ppm=10.0, min_obs_count=20,
+            dBIC_pc_threshold=75.0, n_warps=4096,
+            verbose=True
+    ):
         """
+        CHECKED
         Obtain the light curve trend, after a preliminary filtering of transit signals.
 
         Parameters
@@ -1396,6 +1424,9 @@ class TransitDetector(object):
             Minimum transit depth to consider in ppm. Default 10 ppm.
         min_obs_count : int, optional
             Minimum number of observations required in the kernel window. Default 20.
+        dBIC_pc_threshold : float, optional
+            The delta BIC percentile threshold used to reduce noise. A default value
+            of 75% is used if not specified.
         n_warps : int, optional
             The number of warps to use, default 4096. We want this to be around
             a low integer multiple of the number of concurrent warps able to
@@ -1423,16 +1454,11 @@ class TransitDetector(object):
         #  [t0,d2  t1,d2  t2,d2]]
         # Numpy and C are row-major
         outshape_2d = self.duration_count, self.num_t0_strides
-        BIC_ratio_gpu = gpuarray.empty(outshape_2d, dtype=np.float32)
-        ll_tr_gpu = gpuarray.empty(outshape_2d, dtype=np.float32)
-
-        # send the light curve to the gpu
-        self.offset_time_gpu = to_gpu(self.lc.offset_time, np.float32)
-        self.offset_flux_gpu = to_gpu(self.lc.offset_flux, np.float32)
-        self.flux_weight_gpu = to_gpu(self.lc.flux_weight, np.float32)
+        delta_BIC_gpu = gpuarray.empty(outshape_2d, dtype=np.float32)
+        transit_model_ll_gpu = gpuarray.empty(outshape_2d, dtype=np.float32)
 
         # trend array
-        flux_trend_gpu = gpuarray.empty(self.lc.num_points, dtype=np.float32)
+        flux_trend_gpu = gpuarray.empty(self.lc.num_points, dtype=np.float64)
         num_pts_gpu = gpuarray.empty(self.lc.num_points, dtype=np.int32)
 
         # send the durations to the gpu
@@ -1440,100 +1466,100 @@ class TransitDetector(object):
 
         # block and grid sizes
         block_size = 32, 1, 1  # 1 warp per block
-        grid_size = int(np.ceil(n_warps / outshape_2d[0])), int(outshape_2d[0])
+        grid_size_k1 = int(np.ceil(n_warps / outshape_2d[0])), int(outshape_2d[0])
         # shared memory size -
-        #     space for the transit model as f32
+        #     space for the transit model as f64
         #     + 15 elements per thread for the f64 intermediate arrays
         #     + 1 element per thread for the i32 obs count array
         #                      thread, with 4 bytes per element
         smem_size = int(
-            4 * self.transit_model_size
+            8 * self.transit_model_size
             + 8 * 15 * block_size[0]
             + 4 * 1 * block_size[0]
         )
 
         # type specification
-        _detection_kernel_half_width = np.int32(np.ceil(0.5 * detection_kernel_width / self.lc.cadence))
-        _detrending_kernel_half_width = np.int32(np.ceil(0.5 * detrending_kernel_width / self.lc.cadence))
+        _detection_kernel_half_width = np.int32(
+            np.ceil(0.5 * detection_kernel_width / self.lc.cadence)
+        )
+        _detrending_kernel_half_width = np.int32(
+            np.ceil(0.5 * detrending_kernel_width / self.lc.cadence)
+        )
         _cadence = np.float32(self.lc.cadence)
         _t0_stride_length = np.float32(self.t0_stride_length)
         _min_depth_ppm = np.float32(min_depth_ppm)
+        _min_in_window = np.int32(min_obs_count)
         _n_elem = np.int32(self.lc.num_points)
         _tm_size = np.int32(self.transit_model_size)
         _duration_count = np.int32(self.duration_count)
         _t0_stride_count = np.int32(self.num_t0_strides)
-        _min_in_window = np.int32(min_obs_count)
 
         # run the kernel
         _detrender_k1(
-            self.offset_time_gpu, self.offset_flux_gpu, self.flux_weight_gpu,
+            self.offset_time_gpu_f8, self.offset_flux_gpu_f8, self.flux_weight_gpu_f8,
             _detection_kernel_half_width, _min_depth_ppm, _min_in_window, _cadence, _n_elem,
-            self.offset_transit_model_gpu, _tm_size,
+            self.offset_transit_model_gpu_f8, _tm_size,
             self.durations_gpu, _duration_count,
             _t0_stride_length, _t0_stride_count,
-            BIC_ratio_gpu, ll_tr_gpu,
-            block=block_size, grid=grid_size, shared=smem_size
+            delta_BIC_gpu, transit_model_ll_gpu,
+            block=block_size, grid=grid_size_k1, shared=smem_size
         )
 
-        ###############################################
-        ## identify the transits
+        # read delta_BIC and the transit model log-likelihood from the gpu
+        _ll = transit_model_ll_gpu.get()
+        _dBIC = delta_BIC_gpu.get()
 
+        # todo it would be nice if this could be achieved efficiently on the gpu
+        #  its kinda slow and probably sub-optimal in general at the moment
+        # now try to identify the transits
         # initialise transit mask
-        _transit_mask = np.zeros_like(self.lc.offset_time).astype(np.float32)
-        _tmodi = interp1d(np.linspace(0, 1, self.input_model.size), 1.0 - self.input_model,
-                          kind='linear', copy=True, bounds_error=False, fill_value=0.0,
-                          assume_sorted=True)
-        # identify the transits and populate the mask
-        _ll = ll_tr_gpu.get()
-        _br = BIC_ratio_gpu.get()
-        _ll[_br < 0] = np.nan
-        _ll[_br < np.nanpercentile(_br, 75)] = np.nan
+        _transit_mask = np.zeros_like(self.lc.offset_time).astype(np.float64)
+        # reject parameter space where the non-transit model is definitely more likely
+        _ll[_dBIC < 0] = np.nan
+        # (roughly) keep parameter space where the transit model is much more likely
+        # an attempt to cut down on the noise and keep the transit detection robust
+        _ll[_dBIC < np.nanpercentile(_dBIC, dBIC_pc_threshold)] = np.nan
+        # somewhere to dump the transits
         transits = []
+        # find parameter space with high likelihood
         while np.any(np.isfinite(_ll)):
+            # grab the highest likelihood duration and t0
             d, t = np.unravel_index(
                 np.nanargmax(_ll), _ll.shape
             )
             duration = self.durations[d]
             t0 = self.t0s[t]
+            # record the values
             transits.append((t0, duration))
             # update the transit mask
-            _tm = _tmodi((self.lc.offset_time - t0)/duration + 0.5)
+            _tm = 1.0 - self.transit_model_function((self.lc.offset_time - t0)/duration + 0.5)
             itr1d = _tm > 0
             if not np.any(_transit_mask[itr1d] > 0):
                 # only update the mask if a higher likelihood model isn't already there
                 _transit_mask += _tm
+            # nullify this region in the likelihood array
             for n, d in enumerate(self.durations):
                 itr2d = np.abs(self.t0s - t0) < (0.5 * (duration + d))
                 _ll[n, itr2d] = np.nan
         print("found", len(transits), "transits")
 
-        # send to the gpu
-        _transit_mask_gpu = to_gpu(_transit_mask, np.float32)
-
-        # import matplotlib.pyplot as plt
-        # fig, ax = plt.subplots(nrows=4, ncols=1, sharex=True, figsize=(12, 6))
-        # ax[0].plot(self.lc.offset_time, self.lc.offset_flux)
-        # ax[1].plot(self.lc.offset_time, _transit_mask)
-        # ax[2].imshow(ll_tr_gpu.get(), aspect='auto', origin='lower', extent=[self.t0s.min(), self.t0s.max(), 0, 1])
-        # ax[3].imshow(BIC_ratio_gpu.get(), aspect='auto', origin='lower', extent=[self.t0s.min(), self.t0s.max(), 0, 1])
-        # plt.show()
+        # send the transit mask to the gpu
+        _transit_mask_gpu_f8 = to_gpu(_transit_mask, np.float64)
 
         # new grid shape for kernel 3
-        grid_size3 = int(np.ceil(_n_elem / block_size[0])), int(1)
+        grid_size_k2 = int(np.ceil(_n_elem / block_size[0])), int(1)
 
         # run the kernel
-        _detrender_k5(
-            self.offset_time_gpu, self.offset_flux_gpu, self.flux_weight_gpu,
-            _transit_mask_gpu,
+        _detrender_k2(
+            self.offset_time_gpu_f8, self.offset_flux_gpu_f8, self.flux_weight_gpu_f8,
+            _transit_mask_gpu_f8,
             _detrending_kernel_half_width, _min_in_window, _n_elem,
             flux_trend_gpu, num_pts_gpu,
-            block=block_size, grid=grid_size3
+            block=block_size, grid=grid_size_k2
         )
 
-        # plt.plot(flux_trend_gpu.get())
-        # plt.show()
-
-        return BIC_ratio_gpu.get(), _transit_mask, flux_trend_gpu.get(), num_pts_gpu.get()
+        # todo: I think no need to return dBIC after development is finished
+        return delta_BIC_gpu.get(), _transit_mask, flux_trend_gpu.get(), num_pts_gpu.get()
 
 
 if __name__ == "__main__":
