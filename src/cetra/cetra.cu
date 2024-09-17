@@ -104,7 +104,8 @@ __global__ void detrender_k1(
         int arr2d_ptr = t0_num + t0_stride_count * dur_id;
 
         // calculate ts, the transit start time
-        float ts = t0_num * t0_stride_length - 0.5 * duration;
+        float t0 = t0_num * t0_stride_length;
+        float ts = t0 - 0.5 * duration;
 
         // zero out the additional arrays in shared memory
         sm_sw[threadIdx.x] = 0.0;
@@ -128,11 +129,11 @@ __global__ void detrender_k1(
         __syncthreads();
 
         // compute the indices of the first and last in-transit points
-        int itr_frst_idx = lrintf(ceilf(ts / cadence)) ;
+        int itr_frst_idx = lrintf(ceilf(ts / cadence));
         int itr_last_idx = lrintf(floorf((ts+duration) / cadence));
         // compute the indices of the first and last kernel points
-        int dtr_frst_idx = t0_num - kernel_half_width;  //itr_frst_idx - dt_border;
-        int dtr_last_idx = t0_num + kernel_half_width;  //itr_last_idx + dt_border;
+        int dtr_frst_idx = lrintf(t0 / cadence) - kernel_half_width;  //itr_frst_idx - dt_border;
+        int dtr_last_idx = lrintf(t0 / cadence) + kernel_half_width;  //itr_last_idx + dt_border;
         // clip first indices to start of light curve
         itr_frst_idx = max(itr_frst_idx, 0);
         dtr_frst_idx = max(dtr_frst_idx, 0);
@@ -141,9 +142,6 @@ __global__ void detrender_k1(
         dtr_last_idx = min(dtr_last_idx, lc_size-1);
         // width of the detrending window
         int dtr_size = dtr_last_idx - dtr_frst_idx + 1;
-        if ((blockIdx.x == 0) & (blockIdx.y == 0) & (threadIdx.x == 0) & (threadIdx.y == 0)) {
-            printf("%d %d\n", dtr_frst_idx, dtr_last_idx);
-        }
 
         // loop over the light curve in the detrending window
         for (int i = 0; i <= dtr_size; i += blockDim.x){
@@ -151,23 +149,24 @@ __global__ void detrender_k1(
             if (lc_idx >= lc_size) break;
 
             // skip if the light curve point has infinite error (i.e. zero weight)
-            float w = wght[lc_idx];
-            if (w == 0.0f) continue;
+            double w = (double) wght[lc_idx];
+            if (w == 0.0) continue;
 
             // grab the values of time and flux to make the following code more readable
             // (assume the compiler is smart)
-            float t = time[lc_idx];
-            float f = flux[lc_idx];
+            double t = (double) time[lc_idx];
+            double tref = t - t0;
+            double f = (double) flux[lc_idx];
 
             // accumulate various values
             sm_sw[threadIdx.x] += w;
-            sm_swx[threadIdx.x] += w * t;
+            sm_swx[threadIdx.x] += w * tref;
             sm_swy[threadIdx.x] += w * f;
-            sm_swxx[threadIdx.x] += w * t * t;
-            sm_swxy[threadIdx.x] += w * t * f;
-            sm_swxxx[threadIdx.x] += w * t * t * t;
-            sm_swxxy[threadIdx.x] += w * t * t * f;
-            sm_swxxxx[threadIdx.x] += w * t * t * t * t;
+            sm_swxx[threadIdx.x] += w * tref * tref;
+            sm_swxy[threadIdx.x] += w * tref * f;
+            sm_swxxx[threadIdx.x] += w * tref * tref * tref;
+            sm_swxxy[threadIdx.x] += w * tref * tref * f;
+            sm_swxxxx[threadIdx.x] += w * tref * tref * tref * tref;
             sm_num_pts[threadIdx.x] += 1;
 
             // is this point in the transit window?
@@ -176,14 +175,14 @@ __global__ void detrender_k1(
                 int model_idx = lrintf(( t - ts ) / duration * tm_size);
                 // just in case we're out of bounds:
                 if ((model_idx < 0) || (model_idx >= tm_size)) continue;
-                float modval = sm_tmodel[model_idx];
+                double modval = (double) sm_tmodel[model_idx];
 
                 // accumulate some additional values
                 sm_stjwj[threadIdx.x] += w * modval;
                 sm_sttjwj[threadIdx.x] += w * modval * modval;
-                sm_stjwjxj[threadIdx.x] += w * modval * t;
+                sm_stjwjxj[threadIdx.x] += w * modval * tref;
                 sm_stjwjyj[threadIdx.x] += w * modval * f;
-                sm_stjwjxxj[threadIdx.x] += w * modval * t * t;
+                sm_stjwjxxj[threadIdx.x] += w * modval * tref * tref;
             }
         }
 
@@ -254,22 +253,27 @@ __global__ void detrender_k1(
             continue;
         }
 
+//         BIC_ratio[arr2d_ptr] = B1_tr*t0*t0 + B2_tr*t0 + B3_tr;
+//         ll_tr[arr2d_ptr] = B1_nt*t0*t0 + B2_nt*t0 + B3_nt;
+//         continue;
+
         // now loop through the detrending window again and calculate the log-likelihood
         for (int i = 0; i <= dtr_size; i += blockDim.x){
             int lc_idx = dtr_frst_idx + i + threadIdx.x;
             if (lc_idx >= lc_size) break;
 
             // skip if the light curve point has infinite error (i.e. zero weight)
-            float w = wght[lc_idx];
+            double w = (double) wght[lc_idx];
             if (w == 0.0f) continue;
 
             // grab the values of time and flux to make the following code more readable (assume the compiler is smart)
-            float t = time[lc_idx];
-            float f = flux[lc_idx];
+            double t = (double) time[lc_idx];
+            double tref = t - t0;
+            double f = (double) flux[lc_idx];
 
             // compute the best fit models for this point
-            float tr_flux = B1_tr * t * t + B2_tr * t + B3_tr;  // transit
-            float nt_flux = B1_nt * t * t + B2_nt * t + B3_nt;  // non-transit
+            double tr_flux = B1_tr * tref * tref + B2_tr * tref + B3_tr;  // transit
+            double nt_flux = B1_nt * tref * tref + B2_nt * tref + B3_nt;  // non-transit
 
             // is this point in the transit window?
             if ((lc_idx >= itr_frst_idx) & (lc_idx <= itr_last_idx)) {
@@ -277,15 +281,15 @@ __global__ void detrender_k1(
                 int model_idx = lrintf(( t - ts ) / duration * tm_size);
                 // just in case we're out of bounds:
                 if ((model_idx < 0) || (model_idx >= tm_size)) continue;
-                float modval = sm_tmodel[model_idx];
+                double modval = (double) sm_tmodel[model_idx];
 
                 // incorporate the transit model
                 tr_flux += B4_tr * modval;
             }
 
             // log-likelihood of in-transit points
-            float tr_resid = tr_flux - f;
-            float nt_resid = nt_flux - f;
+            double tr_resid = tr_flux - f;
+            double nt_resid = nt_flux - f;
             double e_term = - 0.5 * log(2 * M_PI / w);
             sm_BIC_tr[threadIdx.x] += (-0.5 * tr_resid * tr_resid * w) + e_term;
             sm_BIC_nt[threadIdx.x] += (-0.5 * nt_resid * nt_resid * w) + e_term;
@@ -302,81 +306,30 @@ __global__ void detrender_k1(
         __syncthreads();
 
         // store the BIC ratio in the output array
-        float BIC_tr = 5 * logf(num_pts) - 2 * sm_BIC_tr[0];
-        float BIC_nt = 4 * logf(num_pts) - 2 * sm_BIC_nt[0];
+        double BIC_tr = 5 * log(1.0 * num_pts) - 2 * sm_BIC_tr[0];
+        double BIC_nt = 4 * log(1.0 * num_pts) - 2 * sm_BIC_nt[0];
         // output
-        BIC_ratio[arr2d_ptr] = BIC_nt - BIC_tr;
-        ll_tr[arr2d_ptr] = sm_BIC_tr[0];
-    }
-}
-
-// detrender - identify regions likely to contain transits
-__global__ void detrender_k2(
-    const float cadence,  // the cadence of the light curve
-    int * mask,  // transit mask array, set to zeros initially
-    const int lc_size,  // number of light curve elements
-    const float * durations,  // the duration array
-    const int n_durations,  // the number of durations
-    const float t0_stride_length,  // the number of reference times per duration
-    const int t0_stride_count,  // number of reference time strides
-    const float * BIC_ratio,  // the likelihood ratio array (to be filled)
-    const float BIC_threshold // the BIC threshold
-){
-    // reference time number
-    const int t0_num = threadIdx.x + blockIdx.x * blockDim.x;
-    if (t0_num >= t0_stride_count) return;
-    // duration index
-    const int dur_id = blockIdx.y;
-    if (dur_id >= n_durations) return;
-
-    // 2d output array pointer
-    int arr2d_ptr = t0_num + t0_stride_count * dur_id;
-
-    // do nothing if below the threshold
-    if ((BIC_ratio[arr2d_ptr] < BIC_threshold) | isnan(BIC_ratio[arr2d_ptr])) {
-        return;
-    }
-
-    // grab the duration
-    const float duration = durations[dur_id];
-
-    // calculate ts and te
-    float ts = t0_num * t0_stride_length - 0.5 * duration;
-    float te = ts + duration;
-
-    // identify the light curve indices within this range
-    int itr_frst_idx = lrintf(ceilf(ts / cadence));
-    int itr_last_idx = lrintf(floorf(te / cadence));
-    // clip last index to end of light curve
-    itr_last_idx = min(itr_last_idx, lc_size-1);
-    // width of the transit window
-    int itr_size = itr_last_idx - itr_frst_idx + 1;
-
-    // set the mask values
-    for (int i = 0; i <= itr_size; i+=1){
-        int lc_idx = itr_frst_idx + i;
-        if (lc_idx >= lc_size) break;
-        mask[lc_idx] = 1;
+        BIC_ratio[arr2d_ptr] = (float) BIC_nt - BIC_tr;
+        ll_tr[arr2d_ptr] = (float) sm_BIC_tr[0];
     }
 }
 
 // detrender - get trend of light curve
-__global__ void detrender_k3(
+__global__ void detrender_k5(
     const float * time,  // offset time array
     const float * flux,  // offset flux array
     const float * wght,  // offset flux weight array
-    const float kernel_width,  // width of the detrending kernel in days
-    const float cadence,  // the cadence of the light curve
+    const float * model,  // transits model array
+    const int kernel_half_width,  // width of the detrending kernel in samples
+    const int min_obs_in_window,  // the minimum acceptable number of observations in the window
     const int lc_size,  // number of light curve elements
-    float * trend  // the output trend array
+    float * trend,  // the output trend array
+    int * npts  //
 
 ){
     // light curve element index
     const int lc_idx = threadIdx.x + blockIdx.x * blockDim.x;
     if (lc_idx >= lc_size) return;
-
-    // determine the kernel half-width in samples
-    int window_size = lrintf(ceilf(0.5 * kernel_width / cadence));
 
     // some accumulators
     double sw = 0.0;
@@ -387,20 +340,30 @@ __global__ void detrender_k3(
     double swxxx = 0.0;
     double swxxy = 0.0;
     double swxxxx = 0.0;
+    double stjwj = 0.0;
+    double sttjwj = 0.0;
+    double stjwjxj = 0.0;
+    double stjwjyj = 0.0;
+    double stjwjxxj = 0.0;
     int num_pts = 0;
 
+    const int total_width = 2 * kernel_half_width;
     // loop through the kernel window
-    for (int i = 0 ; i<=(2*window_size+1); i += 1){
-        int pt_idx = lc_idx - window_size + i;
-        if ((pt_idx < 0) | (pt_idx >= lc_size)) continue;
+    for (int i = 0 ; i <= total_width; i += 1){
+        int pt_idx = lc_idx - kernel_half_width + i;
+        if (pt_idx < 0) continue;
+        if (pt_idx >= lc_size) break;
 
         // skip if the light curve point has zero weight
-        float w = wght[pt_idx];
-        if (w == 0.0f) continue;
+        double w = (double) wght[pt_idx];
+        if (w == 0.0) continue;
 
-        // grab the values of time and flux to make the following code more readable (assume the compiler is smart)
-        float t = time[pt_idx];
-        float f = flux[pt_idx];
+        // grab the values of time and flux to make the following code more readable
+        // (assume the compiler is smart)
+        double t = (double) time[pt_idx] - time[lc_idx];
+        double f = (double) flux[pt_idx];
+        // also grab the transit(s) model value
+        double m = (double) model[pt_idx];
 
         // accumulate various values
         sw += w;
@@ -411,23 +374,39 @@ __global__ void detrender_k3(
         swxxx += w * t * t * t;
         swxxy += w * t * t * f;
         swxxxx += w * t * t * t * t;
+        stjwj += w * m;
+        sttjwj += w * m * m;
+        stjwjxj += w * m * t;
+        stjwjyj += w * m * f;
+        stjwjxxj += w * m * t * t;
         num_pts += 1;
     }
 
     // skip the rest of the loop if too few observations
-    if (num_pts < 10){
+    npts[lc_idx] = num_pts;
+    if (num_pts < min_obs_in_window){
         trend[lc_idx] = nanf(0);
         return;
     };
 
     // calculate the least squares parameters for the model
-    double B1 = (sw*swxx*swxxy - sw*swxxx*swxy - swx*swx*swxxy + swx*swxx*swxy + swx*swxxx*swy - swxx*swxx*swy)/(sw*swxx*swxxxx - sw*swxxx*swxxx - swx*swx*swxxxx + 2*swx*swxx*swxxx - swxx*swxx*swxx);
-    double B2 = (-sw*swxxx*swxxy + sw*swxxxx*swxy + swx*swxx*swxxy - swx*swxxxx*swy - swxx*swxx*swxy + swxx*swxxx*swy)/(sw*swxx*swxxxx - sw*swxxx*swxxx - swx*swx*swxxxx + 2*swx*swxx*swxxx - swxx*swxx*swxx);
-    double B3 = (swx*swxxx*swxxy - swx*swxxxx*swxy - swxx*swxx*swxxy + swxx*swxxx*swxy + swxx*swxxxx*swy - swxxx*swxxx*swy)/(sw*swxx*swxxxx - sw*swxxx*swxxx - swx*swx*swxxxx + 2*swx*swxx*swxxx - swxx*swxx*swxx);
+    double B1, B2, B3;
+    if (stjwj > 0.0){
+        // contains transit, use these eqns
+        B1 = (stjwj*stjwj*swxx*swxxy - stjwj*stjwj*swxxx*swxy - 2*stjwj*stjwjxj*swx*swxxy + stjwj*stjwjxj*swxx*swxy + stjwj*stjwjxj*swxxx*swy + stjwj*stjwjxxj*swx*swxy - stjwj*stjwjxxj*swxx*swy + stjwj*stjwjyj*swx*swxxx - stjwj*stjwjyj*swxx*swxx + stjwjxj*stjwjxj*sw*swxxy - stjwjxj*stjwjxj*swxx*swy - stjwjxj*stjwjxxj*sw*swxy + stjwjxj*stjwjxxj*swx*swy - stjwjxj*stjwjyj*sw*swxxx + stjwjxj*stjwjyj*swx*swxx + stjwjxxj*stjwjyj*sw*swxx - stjwjxxj*stjwjyj*swx*swx - sttjwj*sw*swxx*swxxy + sttjwj*sw*swxxx*swxy + sttjwj*swx*swx*swxxy - sttjwj*swx*swxx*swxy - sttjwj*swx*swxxx*swy + sttjwj*swxx*swxx*swy)/(stjwj*stjwj*swxx*swxxxx - stjwj*stjwj*swxxx*swxxx - 2*stjwj*stjwjxj*swx*swxxxx + 2*stjwj*stjwjxj*swxx*swxxx + 2*stjwj*stjwjxxj*swx*swxxx - 2*stjwj*stjwjxxj*swxx*swxx + stjwjxj*stjwjxj*sw*swxxxx - stjwjxj*stjwjxj*swxx*swxx - 2*stjwjxj*stjwjxxj*sw*swxxx + 2*stjwjxj*stjwjxxj*swx*swxx + stjwjxxj*stjwjxxj*sw*swxx - stjwjxxj*stjwjxxj*swx*swx - sttjwj*sw*swxx*swxxxx + sttjwj*sw*swxxx*swxxx + sttjwj*swx*swx*swxxxx - 2*sttjwj*swx*swxx*swxxx + sttjwj*swxx*swxx*swxx);
+        B2 = (-stjwj*stjwj*swxxx*swxxy + stjwj*stjwj*swxxxx*swxy + stjwj*stjwjxj*swxx*swxxy - stjwj*stjwjxj*swxxxx*swy + stjwj*stjwjxxj*swx*swxxy - 2*stjwj*stjwjxxj*swxx*swxy + stjwj*stjwjxxj*swxxx*swy - stjwj*stjwjyj*swx*swxxxx + stjwj*stjwjyj*swxx*swxxx - stjwjxj*stjwjxxj*sw*swxxy + stjwjxj*stjwjxxj*swxx*swy + stjwjxj*stjwjyj*sw*swxxxx - stjwjxj*stjwjyj*swxx*swxx + stjwjxxj*stjwjxxj*sw*swxy - stjwjxxj*stjwjxxj*swx*swy - stjwjxxj*stjwjyj*sw*swxxx + stjwjxxj*stjwjyj*swx*swxx + sttjwj*sw*swxxx*swxxy - sttjwj*sw*swxxxx*swxy - sttjwj*swx*swxx*swxxy + sttjwj*swx*swxxxx*swy + sttjwj*swxx*swxx*swxy - sttjwj*swxx*swxxx*swy)/(stjwj*stjwj*swxx*swxxxx - stjwj*stjwj*swxxx*swxxx - 2*stjwj*stjwjxj*swx*swxxxx + 2*stjwj*stjwjxj*swxx*swxxx + 2*stjwj*stjwjxxj*swx*swxxx - 2*stjwj*stjwjxxj*swxx*swxx + stjwjxj*stjwjxj*sw*swxxxx - stjwjxj*stjwjxj*swxx*swxx - 2*stjwjxj*stjwjxxj*sw*swxxx + 2*stjwjxj*stjwjxxj*swx*swxx + stjwjxxj*stjwjxxj*sw*swxx - stjwjxxj*stjwjxxj*swx*swx - sttjwj*sw*swxx*swxxxx + sttjwj*sw*swxxx*swxxx + sttjwj*swx*swx*swxxxx - 2*sttjwj*swx*swxx*swxxx + sttjwj*swxx*swxx*swxx);
+        B3 = (stjwj*stjwjxj*swxxx*swxxy - stjwj*stjwjxj*swxxxx*swxy - stjwj*stjwjxxj*swxx*swxxy + stjwj*stjwjxxj*swxxx*swxy + stjwj*stjwjyj*swxx*swxxxx - stjwj*stjwjyj*swxxx*swxxx - stjwjxj*stjwjxj*swxx*swxxy + stjwjxj*stjwjxj*swxxxx*swy + stjwjxj*stjwjxxj*swx*swxxy + stjwjxj*stjwjxxj*swxx*swxy - 2*stjwjxj*stjwjxxj*swxxx*swy - stjwjxj*stjwjyj*swx*swxxxx + stjwjxj*stjwjyj*swxx*swxxx - stjwjxxj*stjwjxxj*swx*swxy + stjwjxxj*stjwjxxj*swxx*swy + stjwjxxj*stjwjyj*swx*swxxx - stjwjxxj*stjwjyj*swxx*swxx - sttjwj*swx*swxxx*swxxy + sttjwj*swx*swxxxx*swxy + sttjwj*swxx*swxx*swxxy - sttjwj*swxx*swxxx*swxy - sttjwj*swxx*swxxxx*swy + sttjwj*swxxx*swxxx*swy)/(stjwj*stjwj*swxx*swxxxx - stjwj*stjwj*swxxx*swxxx - 2*stjwj*stjwjxj*swx*swxxxx + 2*stjwj*stjwjxj*swxx*swxxx + 2*stjwj*stjwjxxj*swx*swxxx - 2*stjwj*stjwjxxj*swxx*swxx + stjwjxj*stjwjxj*sw*swxxxx - stjwjxj*stjwjxj*swxx*swxx - 2*stjwjxj*stjwjxxj*sw*swxxx + 2*stjwjxj*stjwjxxj*swx*swxx + stjwjxxj*stjwjxxj*sw*swxx - stjwjxxj*stjwjxxj*swx*swx - sttjwj*sw*swxx*swxxxx + sttjwj*sw*swxxx*swxxx + sttjwj*swx*swx*swxxxx - 2*sttjwj*swx*swxx*swxxx + sttjwj*swxx*swxx*swxx);
+        // double B4 = (stjwj*swx*swxxx*swxxy - stjwj*swx*swxxxx*swxy - stjwj*swxx*swxx*swxxy + stjwj*swxx*swxxx*swxy + stjwj*swxx*swxxxx*swy - stjwj*swxxx*swxxx*swy - stjwjxj*sw*swxxx*swxxy + stjwjxj*sw*swxxxx*swxy + stjwjxj*swx*swxx*swxxy - stjwjxj*swx*swxxxx*swy - stjwjxj*swxx*swxx*swxy + stjwjxj*swxx*swxxx*swy + stjwjxxj*sw*swxx*swxxy - stjwjxxj*sw*swxxx*swxy - stjwjxxj*swx*swx*swxxy + stjwjxxj*swx*swxx*swxy + stjwjxxj*swx*swxxx*swy - stjwjxxj*swxx*swxx*swy - stjwjyj*sw*swxx*swxxxx + stjwjyj*sw*swxxx*swxxx + stjwjyj*swx*swx*swxxxx - 2*stjwjyj*swx*swxx*swxxx + stjwjyj*swxx*swxx*swxx)/(stjwj*stjwj*swxx*swxxxx - stjwj*stjwj*swxxx*swxxx - 2*stjwj*stjwjxj*swx*swxxxx + 2*stjwj*stjwjxj*swxx*swxxx + 2*stjwj*stjwjxxj*swx*swxxx - 2*stjwj*stjwjxxj*swxx*swxx + stjwjxj*stjwjxj*sw*swxxxx - stjwjxj*stjwjxj*swxx*swxx - 2*stjwjxj*stjwjxxj*sw*swxxx + 2*stjwjxj*stjwjxxj*swx*swxx + stjwjxxj*stjwjxxj*sw*swxx - stjwjxxj*stjwjxxj*swx*swx - sttjwj*sw*swxx*swxxxx + sttjwj*sw*swxxx*swxxx + sttjwj*swx*swx*swxxxx - 2*sttjwj*swx*swxx*swxxx + sttjwj*swxx*swxx*swxx);
+    } else {
+        // no transit, use these eqns
+        B1 = (sw*swxx*swxxy - sw*swxxx*swxy - swx*swx*swxxy + swx*swxx*swxy + swx*swxxx*swy - swxx*swxx*swy)/(sw*swxx*swxxxx - sw*swxxx*swxxx - swx*swx*swxxxx + 2*swx*swxx*swxxx - swxx*swxx*swxx);
+        B2 = (-sw*swxxx*swxxy + sw*swxxxx*swxy + swx*swxx*swxxy - swx*swxxxx*swy - swxx*swxx*swxy + swxx*swxxx*swy)/(sw*swxx*swxxxx - sw*swxxx*swxxx - swx*swx*swxxxx + 2*swx*swxx*swxxx - swxx*swxx*swxx);
+        B3 = (swx*swxxx*swxxy - swx*swxxxx*swxy - swxx*swxx*swxxy + swxx*swxxx*swxy + swxx*swxxxx*swy - swxxx*swxxx*swy)/(sw*swxx*swxxxx - sw*swxxx*swxxx - swx*swx*swxxxx + 2*swx*swxx*swxxx - swxx*swxx*swxx);
+    }
 
     // determine and record the trend
-    float tt = time[lc_idx];
-    trend[lc_idx] = B1*tt*tt + B2*tt + B3;
+    double tt = 0.0 ; //(double) time[lc_idx];
+    trend[lc_idx] = (float) B1*tt*tt + B2*tt + B3;
 }
 
 // monotransit search

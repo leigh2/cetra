@@ -30,8 +30,7 @@ _periodic_search_k1 = cu_src.get_function("periodic_search_k1")
 _periodic_search_k2 = cu_src.get_function("periodic_search_k2")
 # detrending kernels
 _detrender_k1 = cu_src.get_function("detrender_k1")
-_detrender_k2 = cu_src.get_function("detrender_k2")
-_detrender_k3 = cu_src.get_function("detrender_k3")
+_detrender_k5 = cu_src.get_function("detrender_k5")
 
 
 class LightCurve(object):
@@ -160,7 +159,7 @@ class LightCurve(object):
             phase %= transit.period
 
         # generate the mask
-        itr_mask = (phase > 0) & (phase < transit.duration)
+        itr_mask = np.abs(phase/transit.duration) < 0.5
 
         # generate a new LightCurve
         LC_new = LightCurve(
@@ -1379,13 +1378,17 @@ class TransitDetector(object):
 
         return self.monotransit_result
 
-    def get_trend(self, kernel_width, min_depth_ppm=10.0, min_obs_count=20, n_warps=4096, verbose=True):
+    def get_trend(self, detection_kernel_width, detrending_kernel_width, min_depth_ppm=10.0, min_obs_count=20, n_warps=4096, verbose=True):
         """
         Obtain the light curve trend, after a preliminary filtering of transit signals.
 
         Parameters
         ----------
-        kernel_width : float
+        detection_kernel_width : float
+            Width of the detection kernel in days. This might be motivated by
+            some prior knowledge about the activity or rotation rate of the
+            target, but should be longer than the maximum transit duration.
+        detrending_kernel_width : float
             Width of the detrending kernel in days. This might be motivated by
             some prior knowledge about the activity or rotation rate of the
             target, but should be longer than the maximum transit duration.
@@ -1428,10 +1431,9 @@ class TransitDetector(object):
         self.offset_flux_gpu = to_gpu(self.lc.offset_flux, np.float32)
         self.flux_weight_gpu = to_gpu(self.lc.flux_weight, np.float32)
 
-        # transit mask array
-        transit_mask_gpu = gpuarray.zeros(self.lc.num_points, dtype=np.int32)
         # trend array
         flux_trend_gpu = gpuarray.empty(self.lc.num_points, dtype=np.float32)
+        num_pts_gpu = gpuarray.empty(self.lc.num_points, dtype=np.int32)
 
         # send the durations to the gpu
         self.durations_gpu = to_gpu(self.durations, np.float32)
@@ -1451,7 +1453,8 @@ class TransitDetector(object):
         )
 
         # type specification
-        _kernel_half_width = np.int32(np.ceil(0.5 * kernel_width / self.lc.cadence))
+        _detection_kernel_half_width = np.int32(np.ceil(0.5 * detection_kernel_width / self.lc.cadence))
+        _detrending_kernel_half_width = np.int32(np.ceil(0.5 * detrending_kernel_width / self.lc.cadence))
         _cadence = np.float32(self.lc.cadence)
         _t0_stride_length = np.float32(self.t0_stride_length)
         _min_depth_ppm = np.float32(min_depth_ppm)
@@ -1461,13 +1464,10 @@ class TransitDetector(object):
         _t0_stride_count = np.int32(self.num_t0_strides)
         _min_in_window = np.int32(min_obs_count)
 
-        # record the start time
-        # t0 = time()
-
         # run the kernel
         _detrender_k1(
             self.offset_time_gpu, self.offset_flux_gpu, self.flux_weight_gpu,
-            _kernel_half_width, _min_depth_ppm, _min_in_window, _cadence, _n_elem,
+            _detection_kernel_half_width, _min_depth_ppm, _min_in_window, _cadence, _n_elem,
             self.offset_transit_model_gpu, _tm_size,
             self.durations_gpu, _duration_count,
             _t0_stride_length, _t0_stride_count,
@@ -1475,12 +1475,19 @@ class TransitDetector(object):
             block=block_size, grid=grid_size, shared=smem_size
         )
 
-        # initialise t0 and duration masks
-        _t0_mask = np.full_like(self.lc.offset_time, np.nan).astype(np.float32)
-        _d_mask = np.full_like(self.lc.offset_time, np.nan).astype(np.float32)
-        # identify the transits
+        ###############################################
+        ## identify the transits
+
+        # initialise transit mask
+        _transit_mask = np.zeros_like(self.lc.offset_time).astype(np.float32)
+        _tmodi = interp1d(np.linspace(0, 1, self.input_model.size), 1.0 - self.input_model,
+                          kind='linear', copy=True, bounds_error=False, fill_value=0.0,
+                          assume_sorted=True)
+        # identify the transits and populate the mask
         _ll = ll_tr_gpu.get()
-        _ll[BIC_ratio_gpu.get() < 0] = np.nan
+        _br = BIC_ratio_gpu.get()
+        _ll[_br < 0] = np.nan
+        _ll[_br < np.nanpercentile(_br, 75)] = np.nan
         transits = []
         while np.any(np.isfinite(_ll)):
             d, t = np.unravel_index(
@@ -1489,74 +1496,44 @@ class TransitDetector(object):
             duration = self.durations[d]
             t0 = self.t0s[t]
             transits.append((t0, duration))
+            # update the transit mask
+            _tm = _tmodi((self.lc.offset_time - t0)/duration + 0.5)
+            itr1d = _tm > 0
+            if not np.any(_transit_mask[itr1d] > 0):
+                # only update the mask if a higher likelihood model isn't already there
+                _transit_mask += _tm
             for n, d in enumerate(self.durations):
-                itr1d = np.abs(self.lc.offset_time - t0) < (0.5 * (duration + d))
-                if not np.any(np.isfinite(_t0_mask[itr1d])):
-                    # don't update the mask if a higher likelihood model is already there
-                    _t0_mask[itr1d] = t0
-                    _d_mask[itr1d] = duration
                 itr2d = np.abs(self.t0s - t0) < (0.5 * (duration + d))
                 _ll[n, itr2d] = np.nan
         print("found", len(transits), "transits")
 
-        import matplotlib.pyplot as plt
-        plt.figure()
-        plt.plot(_t0_mask)
-        plt.figure()
-        plt.plot(_d_mask)
-        plt.show()
+        # send to the gpu
+        _transit_mask_gpu = to_gpu(_transit_mask, np.float32)
 
-        return ll_tr_gpu.get(), BIC_ratio_gpu.get()
-
-        # determine the BIC threshold
-        # todo user specifiable threshold
-        BIC_threshold = np.float32(
-            np.nanmedian(BIC_ratio_gpu.get())
-        )
-        BIC_threshold = np.float32(
-            np.nanpercentile(BIC_ratio_gpu.get(), 90)
-        )
-        print(BIC_threshold)
-
-        # new grid shape for kernel 2
-        grid_size2 = int(np.ceil(outshape_2d[1]/block_size[0])), int(outshape_2d[0])
-
-        # run the kernel
-        _detrender_k2(
-            _cadence, transit_mask_gpu, _n_elem,
-            self.durations_gpu, _duration_count,
-            _t0_stride_length, _t0_stride_count,
-            BIC_ratio_gpu, BIC_threshold,
-            block=block_size, grid=grid_size2
-        )
-
-        # reweight in-transit points to zero
-        mask = transit_mask_gpu.get()
-        new_weights = self.lc.flux_weight.copy()
-        new_weights[mask == 1] = 0.0
-        # send the new weights to the gpu
-        new_weights_gpu = to_gpu(new_weights, np.float32)
+        # import matplotlib.pyplot as plt
+        # fig, ax = plt.subplots(nrows=4, ncols=1, sharex=True, figsize=(12, 6))
+        # ax[0].plot(self.lc.offset_time, self.lc.offset_flux)
+        # ax[1].plot(self.lc.offset_time, _transit_mask)
+        # ax[2].imshow(ll_tr_gpu.get(), aspect='auto', origin='lower', extent=[self.t0s.min(), self.t0s.max(), 0, 1])
+        # ax[3].imshow(BIC_ratio_gpu.get(), aspect='auto', origin='lower', extent=[self.t0s.min(), self.t0s.max(), 0, 1])
+        # plt.show()
 
         # new grid shape for kernel 3
-        grid_size3 = int(np.ceil(_n_elem/block_size[0])), int(1)
+        grid_size3 = int(np.ceil(_n_elem / block_size[0])), int(1)
 
         # run the kernel
-        _detrender_k3(
-            self.offset_time_gpu, self.offset_flux_gpu, new_weights_gpu,
-            _kernel_width, _cadence, _n_elem, flux_trend_gpu,
+        _detrender_k5(
+            self.offset_time_gpu, self.offset_flux_gpu, self.flux_weight_gpu,
+            _transit_mask_gpu,
+            _detrending_kernel_half_width, _min_in_window, _n_elem,
+            flux_trend_gpu, num_pts_gpu,
             block=block_size, grid=grid_size3
         )
 
-        # make sure the operation is finished before recording the time
-        # (device calls are asynchronous)
-        drv.Context.synchronize()
+        # plt.plot(flux_trend_gpu.get())
+        # plt.show()
 
-        # record the stop time and report the elapsed time
-        t1 = time()
-        if verbose:
-            print(f"completed in {t1 - t0:.3f} seconds")
-
-        return BIC_ratio_gpu.get(), mask, flux_trend_gpu.get()
+        return BIC_ratio_gpu.get(), _transit_mask, flux_trend_gpu.get(), num_pts_gpu.get()
 
 
 if __name__ == "__main__":
