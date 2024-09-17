@@ -35,16 +35,19 @@ __global__ void detrender_k1(
     const float * time,  // offset time array
     const float * flux,  // offset flux array
     const float * wght,  // offset flux weight array
-    const float kernel_width,  // width of the detrending kernel in days
+    const int kernel_half_width,  // half-width of the detrending kernel in samples
+    const float min_depth_ppm,  // the minimum transit depth to consider
+    const int min_obs_in_window,  // the minimum acceptable number of observations in the window
     const float cadence,  // the cadence of the light curve
     const int lc_size,  // number of light curve elements
     const float * tmodel,  // offset flux transit model array
     const int tm_size,  // number of transit model elements
     const float * durations,  // the duration array
     const int n_durations,  // the number of durations
-    const float ts_stride_length,  // the number of start times per duration
-    const int ts_stride_count,  // number of start time strides
-    float * BIC_ratio  // the likelihood ratio array (to be filled)
+    const float t0_stride_length,  // the number of reference times per duration
+    const int t0_stride_count,  // number of reference time strides
+    float * BIC_ratio,  // the BIC ratio array (to be filled)
+    float * ll_tr  // the log-likelihood of the transit model (to be filled)
 ){
     // specify the shared memory array locations and types
     float * sm_tmodel = (float*)sm;
@@ -80,28 +83,28 @@ __global__ void detrender_k1(
     const float duration = durations[dur_id];
 
     // compute the width of the detrending boundary in samples
-    int dt_border = lrintf(ceilf((0.5 * (kernel_width - duration)) / cadence));
+//     int dt_border = lrintf(ceilf((0.5 * (kernel_width - duration)) / cadence));
     // minimum of 3* the duration as a border
-    int min_border = lrintf(3.0*duration/cadence);
-    dt_border = max(dt_border, min_border);
+//     int min_border = lrintf(3.0*duration/cadence);
+//     dt_border = max(dt_border, min_border);
 
-    // Stride through the start time steps
+    // Stride through the reference time steps
     // Each block reads the transit model from global to shared memory once.
-    // Striding through the start time steps means each block computes the likelihood
-    // ratio of multiple start time steps, but it still only reads the transit model
+    // Striding through the reference time steps means each block computes the likelihood
+    // ratio of multiple reference time steps, but it still only reads the transit model
     // once, so the total number of reads from global memory is reduced.
     // Testing indicates this optimisation halves the compute time for a 2yr
     // light curve at 10 min cadence.
-    for (int s = 0; s < ts_stride_count; s += gridDim.x) {
-        // ts number
-        int ts_num = blockIdx.x + s;
-        if (ts_num >= ts_stride_count) return;
+    for (int s = 0; s < t0_stride_count; s += gridDim.x) {
+        // t0 number
+        int t0_num = blockIdx.x + s;
+        if (t0_num >= t0_stride_count) return;
 
         // 2d output array pointer
-        int arr2d_ptr = ts_num + ts_stride_count * dur_id;
+        int arr2d_ptr = t0_num + t0_stride_count * dur_id;
 
-        // calculate ts
-        float ts = ts_num * ts_stride_length;
+        // calculate ts, the transit start time
+        float ts = t0_num * t0_stride_length - 0.5 * duration;
 
         // zero out the additional arrays in shared memory
         sm_sw[threadIdx.x] = 0.0;
@@ -128,8 +131,8 @@ __global__ void detrender_k1(
         int itr_frst_idx = lrintf(ceilf(ts / cadence)) ;
         int itr_last_idx = lrintf(floorf((ts+duration) / cadence));
         // compute the indices of the first and last kernel points
-        int dtr_frst_idx = itr_frst_idx - dt_border;
-        int dtr_last_idx = itr_last_idx + dt_border;
+        int dtr_frst_idx = t0_num - kernel_half_width;  //itr_frst_idx - dt_border;
+        int dtr_last_idx = t0_num + kernel_half_width;  //itr_last_idx + dt_border;
         // clip first indices to start of light curve
         itr_frst_idx = max(itr_frst_idx, 0);
         dtr_frst_idx = max(dtr_frst_idx, 0);
@@ -138,6 +141,9 @@ __global__ void detrender_k1(
         dtr_last_idx = min(dtr_last_idx, lc_size-1);
         // width of the detrending window
         int dtr_size = dtr_last_idx - dtr_frst_idx + 1;
+        if ((blockIdx.x == 0) & (blockIdx.y == 0) & (threadIdx.x == 0) & (threadIdx.y == 0)) {
+            printf("%d %d\n", dtr_frst_idx, dtr_last_idx);
+        }
 
         // loop over the light curve in the detrending window
         for (int i = 0; i <= dtr_size; i += blockDim.x){
@@ -148,7 +154,8 @@ __global__ void detrender_k1(
             float w = wght[lc_idx];
             if (w == 0.0f) continue;
 
-            // grab the values of time and flux to make the following code more readable (assume the compiler is smart)
+            // grab the values of time and flux to make the following code more readable
+            // (assume the compiler is smart)
             float t = time[lc_idx];
             float f = flux[lc_idx];
 
@@ -189,8 +196,9 @@ __global__ void detrender_k1(
         __syncthreads();
         // pull out the value and skip the rest of the loop if too few observations
         int num_pts = sm_num_pts[0];
-        if (num_pts < 10){
+        if (num_pts < min_obs_in_window){
             BIC_ratio[arr2d_ptr] = nanf(0);
+            ll_tr[arr2d_ptr] = nanf(0);
             continue;
         };
 
@@ -240,9 +248,9 @@ __global__ void detrender_k1(
         double B3_nt = (swx*swxxx*swxxy - swx*swxxxx*swxy - swxx*swxx*swxxy + swxx*swxxx*swxy + swxx*swxxxx*swy - swxxx*swxxx*swy)/(sw*swxx*swxxxx - sw*swxxx*swxxx - swx*swx*swxxxx + 2*swx*swxx*swxxx - swxx*swxx*swxx);
 
         // require some minimum depth
-        // todo user setting for the minimum depth
-        if (B4_tr < 10 * 1e-6) {
+        if (B4_tr < min_depth_ppm * 1e-6) {
             BIC_ratio[arr2d_ptr] = nanf(0);
+            ll_tr[arr2d_ptr] = nanf(0);
             continue;
         }
 
@@ -297,8 +305,8 @@ __global__ void detrender_k1(
         float BIC_tr = 5 * logf(num_pts) - 2 * sm_BIC_tr[0];
         float BIC_nt = 4 * logf(num_pts) - 2 * sm_BIC_nt[0];
         // output
-//         float tt = ts + 0.5*duration;B1_tr*tt*tt + B2_tr*tt + B3_tr  ;//BIC_nt - BIC_tr;
         BIC_ratio[arr2d_ptr] = BIC_nt - BIC_tr;
+        ll_tr[arr2d_ptr] = sm_BIC_tr[0];
     }
 }
 
@@ -309,20 +317,20 @@ __global__ void detrender_k2(
     const int lc_size,  // number of light curve elements
     const float * durations,  // the duration array
     const int n_durations,  // the number of durations
-    const float ts_stride_length,  // the number of start times per duration
-    const int ts_stride_count,  // number of start time strides
+    const float t0_stride_length,  // the number of reference times per duration
+    const int t0_stride_count,  // number of reference time strides
     const float * BIC_ratio,  // the likelihood ratio array (to be filled)
     const float BIC_threshold // the BIC threshold
 ){
-    // start time number
-    const int ts_num = threadIdx.x + blockIdx.x * blockDim.x;
-    if (ts_num >= ts_stride_count) return;
+    // reference time number
+    const int t0_num = threadIdx.x + blockIdx.x * blockDim.x;
+    if (t0_num >= t0_stride_count) return;
     // duration index
     const int dur_id = blockIdx.y;
     if (dur_id >= n_durations) return;
 
     // 2d output array pointer
-    int arr2d_ptr = ts_num + ts_stride_count * dur_id;
+    int arr2d_ptr = t0_num + t0_stride_count * dur_id;
 
     // do nothing if below the threshold
     if ((BIC_ratio[arr2d_ptr] < BIC_threshold) | isnan(BIC_ratio[arr2d_ptr])) {
@@ -333,7 +341,7 @@ __global__ void detrender_k2(
     const float duration = durations[dur_id];
 
     // calculate ts and te
-    float ts = ts_num * ts_stride_length;
+    float ts = t0_num * t0_stride_length - 0.5 * duration;
     float te = ts + duration;
 
     // identify the light curve indices within this range
@@ -433,8 +441,8 @@ __global__ void monotransit_search(
     const int tm_size,  // number of transit model elements
     const float * durations,  // the duration array
     const int n_durations,  // the number of durations
-    const float ts_stride_length,  // the number of start times per duration
-    const int ts_stride_count,  // number of start time strides
+    const float t0_stride_length,  // the number of reference times per duration
+    const int t0_stride_count,  // number of reference time strides
     float * like_ratio,  // the likelihood ratio array (to be filled)
     float * depth,  // the depth array (to be filled)
     float * vdepth  // the depth variance array (to be filled)
@@ -465,23 +473,23 @@ __global__ void monotransit_search(
     if (dur_id >= n_durations) return;
     const float duration = durations[dur_id];
 
-    // Stride through the start time steps
+    // Stride through the reference time steps
     // Each block reads the transit model from global to shared memory once.
-    // Striding through the start time steps means each block computes the likelihood
-    // ratio of multiple start time steps, but it still only reads the transit model
+    // Striding through the reference time steps means each block computes the likelihood
+    // ratio of multiple reference time steps, but it still only reads the transit model
     // once, so the total number of reads from global memory is reduced.
     // Testing indicates this optimisation halves the compute time for a 2yr
     // light curve at 10 min cadence.
-    for (int s = 0; s < ts_stride_count; s += gridDim.x) {
-        // ts number
-        int ts_num = blockIdx.x + s;
-        if (ts_num >= ts_stride_count) return;
+    for (int s = 0; s < t0_stride_count; s += gridDim.x) {
+        // t0 number
+        int t0_num = blockIdx.x + s;
+        if (t0_num >= t0_stride_count) return;
 
         // 2d output array pointer
-        int arr2d_ptr = ts_num + ts_stride_count * dur_id;
+        int arr2d_ptr = t0_num + t0_stride_count * dur_id;
 
-        // calculate ts
-        float ts = ts_num * ts_stride_length;
+        // calculate ts, the transit start time
+        float ts = t0_num * t0_stride_length - 0.5 * duration;
 
         // zero out the second and third arrays in shared memory
         sm1[threadIdx.x] = 0.0f;
@@ -643,7 +651,7 @@ __global__ void periodic_search_k1(
     const float * in_like_ratio,  // the previously computed likelihood ratios
     const float * in_depth,  // the previously computed max-likelihood depths
     const float * in_var_depth,  // the previously computed max-likelihood depth variance
-    const int long_ts_count,  // start time stride count across whole light curve
+    const int long_t0_count,  // reference time stride count across whole light curve
     const int duration_idx_first,  // the index of the first duration to check
     const int duration_idx_last,  // the index of the last duration to check
     const int max_transit_count,  // the maximum possible number of transits for this period
@@ -651,7 +659,7 @@ __global__ void periodic_search_k1(
     float * depth_out,  // the temporary depth array (to be filled)
     float * vdepth_out,  // the temporary depth variance array (to be filled)
     int * d_idx_out,  // the temporary duration index array (to be filled)
-    int * ts_idx_out  // the temporary start time index array (to be filled)
+    int * t0_idx_out  // the temporary reference time index array (to be filled)
 ){
     // variable declarations
     bool null = false;
@@ -668,14 +676,14 @@ __global__ void periodic_search_k1(
     sm_lr[threadIdx.x] = nanf(0);
     sm_id[threadIdx.x] = nanf(0);
 
-    // start time and duration indices
-    const int ts_idx = blockIdx.x * blockDim.x + threadIdx.x;
+    // reference time and duration indices
+    const int t0_idx = blockIdx.x * blockDim.x + threadIdx.x;
     const int dur_idx = duration_idx_first + blockIdx.y * blockDim.y + threadIdx.y;
     // nullify this thread if we're out of bounds
     // might as well still allow all the processing to run because warp divergence
     // we can't return yet as we need the threads to participate in the reduction
     // operation later
-    if ((ts_idx >= period_strides) || (dur_idx > duration_idx_last)){
+    if ((t0_idx >= period_strides) || (dur_idx > duration_idx_last)){
         null = true;
     };
 
@@ -688,12 +696,12 @@ __global__ void periodic_search_k1(
     int n_transits = 0;
     // loop through the input arrays to determine the maximum likelihood depth
     for (int i = 0; i < max_transit_count; i++){
-        // compute the start time index of this iteration
-        int _ts_idx = ts_idx + lrintf(period_strides * i);
-        if (_ts_idx >= long_ts_count) break;  // exit the loop if out of bounds
+        // compute the reference time index of this iteration
+        int _t0_idx = t0_idx + lrintf(period_strides * i);
+        if (_t0_idx >= long_t0_count) break;  // exit the loop if out of bounds
 
         // pointer into 2d input arrays
-        int in2d_ptr = _ts_idx + long_ts_count * dur_idx;
+        int in2d_ptr = _t0_idx + long_t0_count * dur_idx;
 
         // do nothing in this iteration if infinite variance
         float _var = in_var_depth[in2d_ptr];
@@ -725,12 +733,12 @@ __global__ void periodic_search_k1(
         // simply taking the nearest element, could interpolate and probably wouldn't
         // be too expensive, but this should be adequate - test this!
 
-        // compute the start time index of this iteration
-        int _ts_idx = ts_idx + lrintf(period_strides * i);
-        if (_ts_idx >= long_ts_count) break;  // exit the loop if out of bounds
+        // compute the reference time index of this iteration
+        int _t0_idx = t0_idx + lrintf(period_strides * i);
+        if (_t0_idx >= long_t0_count) break;  // exit the loop if out of bounds
 
         // pointer into 2d input arrays
-        int in2d_ptr = _ts_idx + long_ts_count * dur_idx;
+        int in2d_ptr = _t0_idx + long_t0_count * dur_idx;
 
         // do nothing in this iteration if infinite variance
         float _var_depth = in_var_depth[in2d_ptr];
@@ -778,7 +786,7 @@ __global__ void periodic_search_k1(
         depth_out[out2d_ptr] = wav_depth;
         vdepth_out[out2d_ptr] = var_depth;
         d_idx_out[out2d_ptr] = dur_idx;
-        ts_idx_out[out2d_ptr] = ts_idx;
+        t0_idx_out[out2d_ptr] = t0_idx;
     }
 }
 
@@ -788,12 +796,12 @@ __global__ void periodic_search_k2(
     const float * depth_in,  // depth array
     const float * vdepth_in,  // depth variance array
     const int * d_idx_in,  // duration index array
-    const int * ts_idx_in,  // start time index array
+    const int * t0_idx_in,  // reference time index array
     float * lrat_out,  // max likelihood ratio array (single element - to be filled)
     float * depth_out,  // depth array (single element - to be filled)
     float * vdepth_out,  // depth variance array (single element - to be filled)
     int * d_idx_out,  // duration index array (single element - to be filled)
-    int * ts_idx_out,  // start time index array (single element - to be filled)
+    int * t0_idx_out,  // reference time index array (single element - to be filled)
     const int in_arr_len  // length of input arrays
 ){
 //     // open the array in shared memory
@@ -837,6 +845,6 @@ __global__ void periodic_search_k2(
     depth_out[0] = depth_in[best_idx];
     vdepth_out[0] = vdepth_in[best_idx];
     d_idx_out[0] = d_idx_in[best_idx];
-    ts_idx_out[0] = ts_idx_in[best_idx];
+    t0_idx_out[0] = t0_idx_in[best_idx];
 
 }

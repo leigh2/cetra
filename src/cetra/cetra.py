@@ -155,7 +155,7 @@ class LightCurve(object):
         periodic = transit.period is not None
 
         # compute the phase
-        phase = self.time - transit.ts
+        phase = self.time - transit.t0
         if periodic:
             phase %= transit.period
 
@@ -280,30 +280,30 @@ class Transit(object):
     A transit (periodic or not)
     """
     lightcurve: LightCurve
-    ts: float
+    t0: float
     duration: float
     depth: float
     log_likelihood: float
     period: float = None
-    ts_error: float = None
+    t0_error: float = None
     duration_error: float = None
     depth_error: float = None
     period_error: float = None
 
     def __str__(self):
-        ts_str = f"            ts: {self.ts:.5f}"
+        t0_str = f"            t0: {self.t0:.5f}"
         duration_str = f"      duration: {self.duration:.5f}"
         depth_str = f"         depth: {self.depth*1e6:.1f}"
         period_str = f"        period: {self.period:.6f}" if self.period is not None else ""
 
-        ts_str += f" ± {self.ts_error:.5f} days\n" if self.ts_error is not None else " days\n"
+        t0_str += f" ± {self.t0_error:.5f} days\n" if self.t0_error is not None else " days\n"
         duration_str += f" ± {self.duration_error:.5f} days\n" if self.duration_error is not None else " days\n"
         depth_str += f" ± {self.depth_error*1e6:.1f} ppm\n" if self.depth_error is not None else " ppm\n"
         snr_str = f"           SNR: {self.depth/self.depth_error:.1f}\n" if self.depth_error is not None else ""
         period_str += f" ± {self.period_error:.6f}" if self.period_error is not None else ""
         period_str += " days\n" if self.period is not None else ""
 
-        return f"{ts_str}{duration_str}{depth_str}{snr_str}{period_str}"\
+        return f"{t0_str}{duration_str}{depth_str}{snr_str}{period_str}"\
                f"log-likelihood: {self.log_likelihood:.4e}\n"\
                f"   lc duration: {self.lightcurve.epoch_baseline:.2f} days\n"\
                f"    lc cadence: {self.lightcurve.cadence*Constants.seconds_per_day:.0f} seconds"
@@ -311,7 +311,7 @@ class Transit(object):
     def refine_lsq(
             self,
             model: np.ndarray,
-            ts_bounds: tuple,
+            t0_bounds: tuple,
             duration_bounds: tuple,
             depth_bounds: tuple,
             period_bounds: tuple = None
@@ -323,8 +323,8 @@ class Transit(object):
         ----------
         model : np.ndarray
             Numpy array of the original transit model.
-        ts_bounds : tuple
-            Tuple of lower and upper bounds on ts.
+        t0_bounds : tuple
+            Tuple of lower and upper bounds on t0.
         duration_bounds : tuple
             Tuple of lower and upper bounds on duration.
         depth_bounds : tuple
@@ -337,6 +337,8 @@ class Transit(object):
         -------
         A new Transit instance
         """
+        raise NotImplementedError("This function needs modification after the shift to t0")
+
         # verify that period bounds are given if required
         if self.period is not None and period_bounds is None:
             raise RuntimeError(
@@ -355,30 +357,30 @@ class Transit(object):
         )
 
         # the model function
-        def _mod_func(_time, _ts, _duration, _depth, _period=None):
+        def _mod_func(_time, _t0, _duration, _depth, _period=None):
             if period_bounds is None:
-                # _ts, _duration, _depth = params
-                _phase = _time - _ts
+                # _t0, _duration, _depth = params
+                _phase = _time - _t0
                 _model = _tm(_phase / _duration) * _depth
             else:
-                # _ts, _duration, _depth, _period = params
-                _phase = (_time - _ts) % _period
+                # _t0, _duration, _depth, _period = params
+                _phase = (_time - _t0) % _period
                 _model = _tm(_phase / _duration) * _depth
 
             return _model
 
 	# set the starting point and bounds arrays
         if period_bounds is None:
-            p0 = np.array([self.ts, self.duration, self.depth])
+            p0 = np.array([self.t0, self.duration, self.depth])
             bounds = (
-                np.array([ts_bounds[0], duration_bounds[0], depth_bounds[0]]),
-                np.array([ts_bounds[1], duration_bounds[1], depth_bounds[1]]),
+                np.array([t0_bounds[0], duration_bounds[0], depth_bounds[0]]),
+                np.array([t0_bounds[1], duration_bounds[1], depth_bounds[1]]),
             )
         else:
-            p0 = np.array([self.ts, self.duration, self.depth, self.period])
+            p0 = np.array([self.t0, self.duration, self.depth, self.period])
             bounds = (
-                np.array([ts_bounds[0], duration_bounds[0], depth_bounds[0], period_bounds[0]]),
-                np.array([ts_bounds[1], duration_bounds[1], depth_bounds[1], period_bounds[1]]),
+                np.array([t0_bounds[0], duration_bounds[0], depth_bounds[0], period_bounds[0]]),
+                np.array([t0_bounds[1], duration_bounds[1], depth_bounds[1], period_bounds[1]]),
             )
 
 	# run the bounded least squares optimisation
@@ -390,7 +392,7 @@ class Transit(object):
         perr = np.sqrt(np.diag(pcov))
 
         # extract parameters
-        ts = popt[0], perr[0]
+        t0 = popt[0], perr[0]
         duration = popt[1], perr[1]
         depth = popt[2], perr[2]
         if self.period is not None:
@@ -407,12 +409,12 @@ class Transit(object):
 
         return Transit(
             lightcurve=self.lightcurve,
-            ts=ts[0],
+            t0=t0[0],
             duration=duration[0],
             depth=depth[0],
             log_likelihood=log_likelihood,
             period=period[0],
-            ts_error=ts[1],
+            t0_error=t0[1],
             duration_error=duration[1],
             depth_error=depth[1],
             period_error=period[1]
@@ -427,7 +429,7 @@ class MonotransitResult(object):
     raw_lightcurve: LightCurve
     resampled_lightcurve: LightCurve
     duration_array: np.ndarray
-    ts_array: np.ndarray
+    t0_array: np.ndarray
     loglike_constant: float
     likeratio_array: np.ndarray
     depth_array: np.ndarray
@@ -452,7 +454,7 @@ class MonotransitResult(object):
         -------
         The Bayesian information criterion
         """
-        k_monotransit = 4  # ts, depth, duration, error variance
+        k_monotransit = 4  # t0, depth, duration, error variance
         lnn = np.log(self.raw_lightcurve.num_points)
         return k_monotransit * lnn - 2 * self.get_max_likelihood()
 
@@ -506,16 +508,16 @@ class MonotransitResult(object):
         )
         return self.get_params(d, t, lsq_refine=lsq_refine)
 
-    def get_params(self, duration_index: int, ts_index: int, lsq_refine: bool = False):
+    def get_params(self, duration_index: int, t0_index: int, lsq_refine: bool = False):
         """
-        Find the parameters of the transit given duration and ts indices
+        Find the parameters of the transit given duration and t0 indices
 
         Parameters
         ----------
         duration_index : int
             Duration index
-        ts_index : int
-            ts index
+        t0_index : int
+            t0 index
         lsq_refine : bool, optional
             If `True` refines the transit parameters using least squares.
             Default `False`.
@@ -527,16 +529,16 @@ class MonotransitResult(object):
         from the lsq refinement.
         """
         # find or compute the requested parameters
-        ts = self.ts_array[ts_index] + self.resampled_lightcurve.reference_time
+        t0 = self.t0_array[t0_index] + self.resampled_lightcurve.reference_time
         duration = self.duration_array[duration_index]
-        depth = self.depth_array[duration_index, ts_index]
-        depth_error = np.sqrt(self.depth_variance_array[duration_index, ts_index])
-        loglike = self.loglike_constant + self.likeratio_array[duration_index, ts_index]
+        depth = self.depth_array[duration_index, t0_index]
+        depth_error = np.sqrt(self.depth_variance_array[duration_index, t0_index])
+        loglike = self.loglike_constant + self.likeratio_array[duration_index, t0_index]
 
         # generate the grid search Transit object
         grid_transit = Transit(
             lightcurve=self.raw_lightcurve,
-            ts=ts,
+            t0=t0,
             duration=duration,
             depth=depth,
             depth_error=depth_error,
@@ -548,8 +550,8 @@ class MonotransitResult(object):
             return grid_transit
         else:
             # lsq bounds on parameters
-            # ts
-            ts_bounds = get_bounds(self.ts_array, ts_index, ts)
+            # t0
+            t0_bounds = get_bounds(self.t0_array, t0_index, t0)
             # duration
             duration_bounds = get_bounds(self.duration_array, duration_index, duration)
             # depth (5 sigma is more than enough)
@@ -560,7 +562,7 @@ class MonotransitResult(object):
             # run the lsq refinement
             lsq_transit = grid_transit.refine_lsq(
                 model=self.input_model,
-                ts_bounds=ts_bounds,
+                t0_bounds=t0_bounds,
                 duration_bounds=duration_bounds,
                 depth_bounds=depth_bounds
             )
@@ -576,14 +578,14 @@ class PeriodogramResult(object):
     raw_lightcurve: LightCurve
     resampled_lightcurve: LightCurve
     duration_array: np.ndarray
-    ts_array: np.ndarray
+    t0_array: np.ndarray
     period_array: np.ndarray
     loglike_constant: float
     likeratio_array: np.ndarray
     depth_array: np.ndarray
     depth_variance_array: np.ndarray
     duration_index_array: np.ndarray
-    ts_index_array: np.ndarray
+    t0_index_array: np.ndarray
     monotransit_result: MonotransitResult
     input_model: np.ndarray
 
@@ -605,7 +607,7 @@ class PeriodogramResult(object):
         -------
         Array of the Bayesian information criteria
         """
-        k_periodic = 5  # period, ts, depth, duration, error variance
+        k_periodic = 5  # period, t0, depth, duration, error variance
         lnn = np.log(self.raw_lightcurve.num_points)
         return k_periodic * lnn - 2 * self.get_log_likelihoods()
 
@@ -678,24 +680,24 @@ class PeriodogramResult(object):
         -------
         A Transit object
         """
-        ts_index = self.ts_index_array[period_index]
+        t0_index = self.t0_index_array[period_index]
         duration_index = self.duration_index_array[period_index]
         # find or compute the requested parameters
         period = self.period_array[period_index]
-        ts = self.ts_array[ts_index] + self.resampled_lightcurve.reference_time
+        t0 = self.t0_array[t0_index] + self.resampled_lightcurve.reference_time
         duration = self.duration_array[duration_index]
         depth = self.depth_array[period_index]
         depth_error = np.sqrt(self.depth_variance_array[period_index])
         loglike = self.loglike_constant + self.likeratio_array[period_index]
 
-        # make sure that ts is the first transit
-        while (ts - period) > self.raw_lightcurve.time.min():
-            ts -= period
+        # make sure that t0 is the first transit
+        while (t0 - period) > self.raw_lightcurve.time.min():
+            t0 -= period
 
         # generate the grid search Transit object
         grid_transit = Transit(
             lightcurve=self.raw_lightcurve,
-            ts=ts,
+            t0=t0,
             duration=duration,
             depth=depth,
             depth_error=depth_error,
@@ -710,9 +712,9 @@ class PeriodogramResult(object):
             # lsq bounds on parameters
             # period
             period_bounds = get_bounds(self.period_array, period_index, period)
-            # ts
-            ts_bounds = get_bounds(
-                self.ts_array + self.resampled_lightcurve.reference_time, ts_index, ts
+            # t0
+            t0_bounds = get_bounds(
+                self.t0_array + self.resampled_lightcurve.reference_time, t0_index, t0
             )
             # duration
             duration_bounds = get_bounds(self.duration_array, duration_index, duration)
@@ -724,7 +726,7 @@ class PeriodogramResult(object):
             # run the lsq refinement
             lsq_transit = grid_transit.refine_lsq(
                 model=self.input_model,
-                ts_bounds=ts_bounds,
+                t0_bounds=t0_bounds,
                 duration_bounds=duration_bounds,
                 depth_bounds=depth_bounds,
                 period_bounds=period_bounds
@@ -740,7 +742,7 @@ class TransitDetector(object):
     def __init__(
             self, times, flux, flux_error, durations=None,
             min_duration=0.02, max_duration=1.0, duration_log_step=1.1,
-            ts_stride_fraction=None, ts_stride_length=None,
+            t0_stride_fraction=None, t0_stride_length=None,
             resample_cadence=None,
             transit_model=None, transit_model_size=1024,
             verbose=True
@@ -766,16 +768,16 @@ class TransitDetector(object):
         duration_log_step : float, optional
             The log-spacing of the durations to be used if the duration grid
             is to be internally determined. Default 1.1.
-        ts_stride_fraction : float, optional
+        t0_stride_fraction : float, optional
             The fraction of the minimum duration that determines the length of
-            each ts stride. The default is 1% of the minimum duration. This
-            argument should be left unset if a specific ts stride length is
-            given using the `ts_stride_length` argument.
-        ts_stride_length : float, optional
-            The ts stride length (in seconds) for the monotransit search. The
+            each t0 stride. The default is 1% of the minimum duration. This
+            argument should be left unset if a specific t0 stride length is
+            given using the `t0_stride_length` argument.
+        t0_stride_length : float, optional
+            The t0 stride length (in seconds) for the monotransit search. The
             default is to use 1% of the minimum duration (i.e.
-            `ts_stride_fraction = 0.01`). This argument should be left unset if
-            `ts_stride_fraction` is set.
+            `t0_stride_fraction = 0.01`). This argument should be left unset if
+            `t0_stride_fraction` is set.
         resample_cadence : float, optional
             The cadence (in seconds) to use for resampling the light curve. By
             default, the module will try to detect the underlying cadence.
@@ -859,7 +861,7 @@ class TransitDetector(object):
         # that searches for transits that begin before the data. This requires
         # a regular observing cadence, another benefit of our earlier
         # resampling operation.
-        num_prepad = int(np.ceil(np.max(self.durations) / self.lc.cadence))
+        num_prepad = int(np.ceil(0.5 * np.max(self.durations) / self.lc.cadence))
         self.lc = self.lc.pad(num_prepad, 0)
         if verbose:
             print(f"prepended {num_prepad} null points to the light curve")
@@ -907,28 +909,28 @@ class TransitDetector(object):
             print(f"maximum nearest-neighbour error: {100 * _nn_error[0]:.2e}%")
             print(f"   mean nearest-neighbour error: {100 * _nn_error[1]:.2e}%")
 
-        # determine the ts stride length
-        if ts_stride_length is None and ts_stride_fraction is None:
-            self.ts_stride_length = np.min(self.durations) * 0.01
-        elif ts_stride_fraction is None and ts_stride_length is not None:
-            self.ts_stride_length = ts_stride_length / Constants.seconds_per_day
-        elif ts_stride_fraction is not None and ts_stride_length is None:
-            self.ts_stride_length = np.min(self.durations) * ts_stride_fraction
-        elif ts_stride_fraction is not None and ts_stride_length is not None:
+        # determine the t0 stride length
+        if t0_stride_length is None and t0_stride_fraction is None:
+            self.t0_stride_length = np.min(self.durations) * 0.01
+        elif t0_stride_fraction is None and t0_stride_length is not None:
+            self.t0_stride_length = t0_stride_length / Constants.seconds_per_day
+        elif t0_stride_fraction is not None and t0_stride_length is None:
+            self.t0_stride_length = np.min(self.durations) * t0_stride_fraction
+        elif t0_stride_fraction is not None and t0_stride_length is not None:
             warnings.warn(
-                "Both ts_stride_fraction and ts_stride_length are set, using "
+                "Both t0_stride_fraction and t0_stride_length are set, using "
                 "the smaller of the two"
             )
-            _fracval = np.min(self.durations) * ts_stride_fraction
-            _lenval = ts_stride_length / Constants.seconds_per_day
-            self.ts_stride_length = min(_fracval, _lenval)
+            _fracval = np.min(self.durations) * t0_stride_fraction
+            _lenval = t0_stride_length / Constants.seconds_per_day
+            self.t0_stride_length = min(_fracval, _lenval)
         if verbose:
-            print(f"ts stride length: {self.ts_stride_length * Constants.seconds_per_day:.3f} seconds")
-        # generate the grid of tss
-        self.tss = np.arange(0, self.lc.offset_time[-1], self.ts_stride_length)
-        self.num_ts_strides = self.tss.size
+            print(f"t0 stride length: {self.t0_stride_length * Constants.seconds_per_day:.3f} seconds")
+        # generate the grid of t0s
+        self.t0s = np.arange(0, self.lc.offset_time[-1], self.t0_stride_length)
+        self.num_t0_strides = self.t0s.size
         if verbose:
-            print(f"{self.num_ts_strides:d} ts strides")
+            print(f"{self.num_t0_strides:d} t0 strides")
 
         # initialise instance variables that get populated later
         self.periods = None
@@ -1047,7 +1049,7 @@ class TransitDetector(object):
             'like_ratio': np.full(self.period_count, np.nan, dtype=np.float32),
             'depth': np.full(self.period_count, np.nan, dtype=np.float32),
             'var_depth': np.full(self.period_count, np.nan, dtype=np.float32),
-            'ts_idx': np.full(self.period_count, -1, dtype=np.int32),
+            't0_idx': np.full(self.period_count, -1, dtype=np.int32),
             'duration_idx': np.full(self.period_count, -1, dtype=np.int32)
         }
 
@@ -1082,7 +1084,7 @@ class TransitDetector(object):
             periodogram['like_ratio'][n] = ret[0]
             periodogram['depth'][n] = ret[1]
             periodogram['var_depth'][n] = ret[2]
-            periodogram['ts_idx'][n] = ret[3]
+            periodogram['t0_idx'][n] = ret[3]
             periodogram['duration_idx'][n] = ret[4]
 
         # record the stop time and report elapsed
@@ -1095,14 +1097,14 @@ class TransitDetector(object):
             raw_lightcurve=self.lc_in,
             resampled_lightcurve=self.lc,
             duration_array=self.durations,
-            ts_array=self.tss,
+            t0_array=self.t0s,
             period_array=self.periods,
             loglike_constant=self.lc.flat_loglike,
             likeratio_array=periodogram['like_ratio'],
             depth_array=periodogram['depth'],
             depth_variance_array=periodogram['var_depth'],
             duration_index_array=periodogram['duration_idx'],
-            ts_index_array=periodogram['ts_idx'],
+            t0_index_array=periodogram['t0_idx'],
             monotransit_result=self.monotransit_result,
             input_model=self.input_model
         )
@@ -1125,7 +1127,7 @@ class TransitDetector(object):
     ):
         """
         Find the maximum likelihood ratio (vs. constant flux model), depth,
-        depth variance, ts and duration for a given period.
+        depth variance, t0 and duration for a given period.
 
         Parameters
         ----------
@@ -1150,7 +1152,7 @@ class TransitDetector(object):
         Returns
         -------
         Tuple of len=5 containing the maximum likelihood ratio and the
-        corresponding depth, depth variance, ts index and duration index for
+        corresponding depth, depth variance, t0 index and duration index for
         the input period.
         """
 
@@ -1198,7 +1200,7 @@ class TransitDetector(object):
         # maximum possible number of transits
         max_transit_count = np.int32(np.floor(self.lc.epoch_baseline / period) + 1)
         # the period in strides
-        _period_in_strides = np.float32(period / self.ts_stride_length)
+        _period_in_strides = np.float32(period / self.t0_stride_length)
 
         # block and grid sizes
         # the second and third block dimensions should always have size 1
@@ -1219,27 +1221,27 @@ class TransitDetector(object):
         tmp_depth_gpu = gpuarray.empty(tmp_size, dtype=np.float32)
         tmp_var_depth_gpu = gpuarray.empty(tmp_size, dtype=np.float32)
         tmp_dur_index_gpu = gpuarray.empty(tmp_size, dtype=np.int32)
-        tmp_ts_index_gpu = gpuarray.empty(tmp_size, dtype=np.int32)
+        tmp_t0_index_gpu = gpuarray.empty(tmp_size, dtype=np.int32)
         # second pass output
         sgl_likerat_gpu = gpuarray.empty(1, dtype=np.float32)
         sgl_depth_gpu = gpuarray.empty(1, dtype=np.float32)
         sgl_var_depth_gpu = gpuarray.empty(1, dtype=np.float32)
         sgl_dur_index_gpu = gpuarray.empty(1, dtype=np.int32)
-        sgl_ts_index_gpu = gpuarray.empty(1, dtype=np.int32)
+        sgl_t0_index_gpu = gpuarray.empty(1, dtype=np.int32)
 
         # type specification
         _tm_size = np.int32(self.transit_model_size)
         _duration_count = np.int32(self.duration_count)
-        _all_ts_stride_count = np.int32(self.num_ts_strides)
+        _all_t0_stride_count = np.int32(self.num_t0_strides)
 
         # run the first kernel
         _periodic_search_k1(
             _period_in_strides,
             self.like_ratio_2d_gpu, self.depth_2d_gpu, self.var_depth_2d_gpu,
-            _all_ts_stride_count,
+            _all_t0_stride_count,
             first_d_in_range_idx, last_d_in_range_idx, max_transit_count,
             tmp_likerat_gpu, tmp_depth_gpu, tmp_var_depth_gpu,
-            tmp_dur_index_gpu, tmp_ts_index_gpu,
+            tmp_dur_index_gpu, tmp_t0_index_gpu,
             block=block_size_k1, grid=grid_size_k1, shared=smem_size_k1
         )
 
@@ -1256,8 +1258,8 @@ class TransitDetector(object):
 
         # final reduction operation to obtain the best parameters
         _periodic_search_k2(
-            tmp_likerat_gpu, tmp_depth_gpu, tmp_var_depth_gpu, tmp_dur_index_gpu, tmp_ts_index_gpu,
-            sgl_likerat_gpu, sgl_depth_gpu, sgl_var_depth_gpu, sgl_dur_index_gpu, sgl_ts_index_gpu,
+            tmp_likerat_gpu, tmp_depth_gpu, tmp_var_depth_gpu, tmp_dur_index_gpu, tmp_t0_index_gpu,
+            sgl_likerat_gpu, sgl_depth_gpu, sgl_var_depth_gpu, sgl_dur_index_gpu, sgl_t0_index_gpu,
             np.int32(tmp_size),
             block=block_size_k2, grid=grid_size_k2, shared=smem_size_k2
         )
@@ -1266,10 +1268,10 @@ class TransitDetector(object):
         lrat_out = sgl_likerat_gpu.get()[0]
         depth_out = sgl_depth_gpu.get()[0]
         vdepth_out = sgl_var_depth_gpu.get()[0]
-        ts_idx_out = sgl_ts_index_gpu.get()[0]
+        t0_idx_out = sgl_t0_index_gpu.get()[0]
         dur_idx_out = sgl_dur_index_gpu.get()[0]
 
-        return lrat_out, depth_out, vdepth_out, ts_idx_out, dur_idx_out
+        return lrat_out, depth_out, vdepth_out, t0_idx_out, dur_idx_out
 
     def monotransit_search(self, n_warps=4096, verbose=True):
         """
@@ -1286,7 +1288,7 @@ class TransitDetector(object):
             The RTX A5000 has 64 SMs * 48 warps = 3072 concurrent warps.
             Striding in this way limits the number of reads of the transit
             model from global into shared memory. This value shouldn't
-            exceed the number of ts strides times the number of durations.
+            exceed the number of t0 strides times the number of durations.
         verbose : bool, optional
             If `True`, reports the parameters of the maximum likelihood and
             maximum SNR transits. Default is `True`.
@@ -1299,13 +1301,13 @@ class TransitDetector(object):
             print("commencing monotransit search")
 
         # initialise output arrays on the gpu
-        # tss are along the rows, durations along columns
+        # t0s are along the rows, durations along columns
         # i.e.
         # [[t0,d0  t1,d0  t2,d0]
         #  [t0,d1  t1,d1  t2,d1]
         #  [t0,d2  t1,d2  t2,d2]]
         # Numpy and C are row-major
-        outshape_2d = self.duration_count, self.num_ts_strides
+        outshape_2d = self.duration_count, self.num_t0_strides
         self.like_ratio_2d_gpu = gpuarray.empty(outshape_2d, dtype=np.float32)
         self.depth_2d_gpu = gpuarray.empty(outshape_2d, dtype=np.float32)
         self.var_depth_2d_gpu = gpuarray.empty(outshape_2d, dtype=np.float32)
@@ -1327,11 +1329,11 @@ class TransitDetector(object):
 
         # type specification
         _cadence = np.float32(self.lc.cadence)
-        _ts_stride_length = np.float32(self.ts_stride_length)
+        _t0_stride_length = np.float32(self.t0_stride_length)
         _n_elem = np.int32(self.lc.num_points)
         _tm_size = np.int32(self.transit_model_size)
         _duration_count = np.int32(self.duration_count)
-        _ts_stride_count = np.int32(self.num_ts_strides)
+        _t0_stride_count = np.int32(self.num_t0_strides)
 
         # record the start time
         t0 = time()
@@ -1341,7 +1343,7 @@ class TransitDetector(object):
             self.offset_time_gpu, self.offset_flux_gpu, self.flux_weight_gpu, _cadence, _n_elem,
             self.offset_transit_model_gpu, _tm_size,
             self.durations_gpu, _duration_count,
-            _ts_stride_length, _ts_stride_count,
+            _t0_stride_length, _t0_stride_count,
             self.like_ratio_2d_gpu, self.depth_2d_gpu, self.var_depth_2d_gpu,
             block=block_size, grid=grid_size, shared=smem_size
         )
@@ -1360,7 +1362,7 @@ class TransitDetector(object):
             raw_lightcurve=self.lc_in,
             resampled_lightcurve=self.lc,
             duration_array=self.durations,
-            ts_array=self.tss,
+            t0_array=self.t0s,
             loglike_constant=self.lc.flat_loglike,
             likeratio_array=self.like_ratio_2d_gpu.get(),
             depth_array=self.depth_2d_gpu.get(),
@@ -1377,7 +1379,7 @@ class TransitDetector(object):
 
         return self.monotransit_result
 
-    def get_trend(self, kernel_width, n_warps=4096, verbose=True):
+    def get_trend(self, kernel_width, min_depth_ppm=10.0, min_obs_count=20, n_warps=4096, verbose=True):
         """
         Obtain the light curve trend, after a preliminary filtering of transit signals.
 
@@ -1387,6 +1389,10 @@ class TransitDetector(object):
             Width of the detrending kernel in days. This might be motivated by
             some prior knowledge about the activity or rotation rate of the
             target, but should be longer than the maximum transit duration.
+        min_depth_ppm : float, optional
+            Minimum transit depth to consider in ppm. Default 10 ppm.
+        min_obs_count : int, optional
+            Minimum number of observations required in the kernel window. Default 20.
         n_warps : int, optional
             The number of warps to use, default 4096. We want this to be around
             a low integer multiple of the number of concurrent warps able to
@@ -1395,7 +1401,7 @@ class TransitDetector(object):
             The RTX A5000 has 64 SMs * 48 warps = 3072 concurrent warps.
             Striding in this way limits the number of reads of the transit
             model from global into shared memory. This value shouldn't
-            exceed the number of ts strides times the number of durations.
+            exceed the number of t0 strides times the number of durations.
         verbose : bool, optional
             If `True`, reports with additional verbosity.
 
@@ -1413,8 +1419,9 @@ class TransitDetector(object):
         #  [t0,d1  t1,d1  t2,d1]
         #  [t0,d2  t1,d2  t2,d2]]
         # Numpy and C are row-major
-        outshape_2d = self.duration_count, self.num_ts_strides
-        self.BIC_ratio_gpu = gpuarray.empty(outshape_2d, dtype=np.float32)
+        outshape_2d = self.duration_count, self.num_t0_strides
+        BIC_ratio_gpu = gpuarray.empty(outshape_2d, dtype=np.float32)
+        ll_tr_gpu = gpuarray.empty(outshape_2d, dtype=np.float32)
 
         # send the light curve to the gpu
         self.offset_time_gpu = to_gpu(self.lc.offset_time, np.float32)
@@ -1444,35 +1451,70 @@ class TransitDetector(object):
         )
 
         # type specification
-        _kernel_width = np.float32(kernel_width)
+        _kernel_half_width = np.int32(np.ceil(0.5 * kernel_width / self.lc.cadence))
         _cadence = np.float32(self.lc.cadence)
-        _ts_stride_length = np.float32(self.ts_stride_length)
+        _t0_stride_length = np.float32(self.t0_stride_length)
+        _min_depth_ppm = np.float32(min_depth_ppm)
         _n_elem = np.int32(self.lc.num_points)
         _tm_size = np.int32(self.transit_model_size)
         _duration_count = np.int32(self.duration_count)
-        _ts_stride_count = np.int32(self.num_ts_strides)
+        _t0_stride_count = np.int32(self.num_t0_strides)
+        _min_in_window = np.int32(min_obs_count)
 
         # record the start time
-        t0 = time()
+        # t0 = time()
 
         # run the kernel
         _detrender_k1(
             self.offset_time_gpu, self.offset_flux_gpu, self.flux_weight_gpu,
-            _kernel_width, _cadence, _n_elem,
+            _kernel_half_width, _min_depth_ppm, _min_in_window, _cadence, _n_elem,
             self.offset_transit_model_gpu, _tm_size,
             self.durations_gpu, _duration_count,
-            _ts_stride_length, _ts_stride_count,
-            self.BIC_ratio_gpu,
+            _t0_stride_length, _t0_stride_count,
+            BIC_ratio_gpu, ll_tr_gpu,
             block=block_size, grid=grid_size, shared=smem_size
         )
+
+        # initialise t0 and duration masks
+        _t0_mask = np.full_like(self.lc.offset_time, np.nan).astype(np.float32)
+        _d_mask = np.full_like(self.lc.offset_time, np.nan).astype(np.float32)
+        # identify the transits
+        _ll = ll_tr_gpu.get()
+        _ll[BIC_ratio_gpu.get() < 0] = np.nan
+        transits = []
+        while np.any(np.isfinite(_ll)):
+            d, t = np.unravel_index(
+                np.nanargmax(_ll), _ll.shape
+            )
+            duration = self.durations[d]
+            t0 = self.t0s[t]
+            transits.append((t0, duration))
+            for n, d in enumerate(self.durations):
+                itr1d = np.abs(self.lc.offset_time - t0) < (0.5 * (duration + d))
+                if not np.any(np.isfinite(_t0_mask[itr1d])):
+                    # don't update the mask if a higher likelihood model is already there
+                    _t0_mask[itr1d] = t0
+                    _d_mask[itr1d] = duration
+                itr2d = np.abs(self.t0s - t0) < (0.5 * (duration + d))
+                _ll[n, itr2d] = np.nan
+        print("found", len(transits), "transits")
+
+        import matplotlib.pyplot as plt
+        plt.figure()
+        plt.plot(_t0_mask)
+        plt.figure()
+        plt.plot(_d_mask)
+        plt.show()
+
+        return ll_tr_gpu.get(), BIC_ratio_gpu.get()
 
         # determine the BIC threshold
         # todo user specifiable threshold
         BIC_threshold = np.float32(
-            np.nanmedian(self.BIC_ratio_gpu.get())
+            np.nanmedian(BIC_ratio_gpu.get())
         )
         BIC_threshold = np.float32(
-            np.nanpercentile(self.BIC_ratio_gpu.get(), 90)
+            np.nanpercentile(BIC_ratio_gpu.get(), 90)
         )
         print(BIC_threshold)
 
@@ -1483,8 +1525,8 @@ class TransitDetector(object):
         _detrender_k2(
             _cadence, transit_mask_gpu, _n_elem,
             self.durations_gpu, _duration_count,
-            _ts_stride_length, _ts_stride_count,
-            self.BIC_ratio_gpu, BIC_threshold,
+            _t0_stride_length, _t0_stride_count,
+            BIC_ratio_gpu, BIC_threshold,
             block=block_size, grid=grid_size2
         )
 
@@ -1514,7 +1556,7 @@ class TransitDetector(object):
         if verbose:
             print(f"completed in {t1 - t0:.3f} seconds")
 
-        return self.BIC_ratio_gpu.get(), mask, flux_trend_gpu.get()
+        return BIC_ratio_gpu.get(), mask, flux_trend_gpu.get()
 
 
 if __name__ == "__main__":
