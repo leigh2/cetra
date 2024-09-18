@@ -243,15 +243,22 @@ __global__ void detrender_k1(
         */
 
         // calculate the least squares parameters for the transit model
-        double B1_tr = (stjwj*stjwj*swxx*swxxy - stjwj*stjwj*swxxx*swxy - 2*stjwj*stjwjxj*swx*swxxy + stjwj*stjwjxj*swxx*swxy + stjwj*stjwjxj*swxxx*swy + stjwj*stjwjxxj*swx*swxy - stjwj*stjwjxxj*swxx*swy + stjwj*stjwjyj*swx*swxxx - stjwj*stjwjyj*swxx*swxx + stjwjxj*stjwjxj*sw*swxxy - stjwjxj*stjwjxj*swxx*swy - stjwjxj*stjwjxxj*sw*swxy + stjwjxj*stjwjxxj*swx*swy - stjwjxj*stjwjyj*sw*swxxx + stjwjxj*stjwjyj*swx*swxx + stjwjxxj*stjwjyj*sw*swxx - stjwjxxj*stjwjyj*swx*swx - sttjwj*sw*swxx*swxxy + sttjwj*sw*swxxx*swxy + sttjwj*swx*swx*swxxy - sttjwj*swx*swxx*swxy - sttjwj*swx*swxxx*swy + sttjwj*swxx*swxx*swy)/(stjwj*stjwj*swxx*swxxxx - stjwj*stjwj*swxxx*swxxx - 2*stjwj*stjwjxj*swx*swxxxx + 2*stjwj*stjwjxj*swxx*swxxx + 2*stjwj*stjwjxxj*swx*swxxx - 2*stjwj*stjwjxxj*swxx*swxx + stjwjxj*stjwjxj*sw*swxxxx - stjwjxj*stjwjxj*swxx*swxx - 2*stjwjxj*stjwjxxj*sw*swxxx + 2*stjwjxj*stjwjxxj*swx*swxx + stjwjxxj*stjwjxxj*sw*swxx - stjwjxxj*stjwjxxj*swx*swx - sttjwj*sw*swxx*swxxxx + sttjwj*sw*swxxx*swxxx + sttjwj*swx*swx*swxxxx - 2*sttjwj*swx*swxx*swxxx + sttjwj*swxx*swxx*swxx);
-        double B2_tr = (-stjwj*stjwj*swxxx*swxxy + stjwj*stjwj*swxxxx*swxy + stjwj*stjwjxj*swxx*swxxy - stjwj*stjwjxj*swxxxx*swy + stjwj*stjwjxxj*swx*swxxy - 2*stjwj*stjwjxxj*swxx*swxy + stjwj*stjwjxxj*swxxx*swy - stjwj*stjwjyj*swx*swxxxx + stjwj*stjwjyj*swxx*swxxx - stjwjxj*stjwjxxj*sw*swxxy + stjwjxj*stjwjxxj*swxx*swy + stjwjxj*stjwjyj*sw*swxxxx - stjwjxj*stjwjyj*swxx*swxx + stjwjxxj*stjwjxxj*sw*swxy - stjwjxxj*stjwjxxj*swx*swy - stjwjxxj*stjwjyj*sw*swxxx + stjwjxxj*stjwjyj*swx*swxx + sttjwj*sw*swxxx*swxxy - sttjwj*sw*swxxxx*swxy - sttjwj*swx*swxx*swxxy + sttjwj*swx*swxxxx*swy + sttjwj*swxx*swxx*swxy - sttjwj*swxx*swxxx*swy)/(stjwj*stjwj*swxx*swxxxx - stjwj*stjwj*swxxx*swxxx - 2*stjwj*stjwjxj*swx*swxxxx + 2*stjwj*stjwjxj*swxx*swxxx + 2*stjwj*stjwjxxj*swx*swxxx - 2*stjwj*stjwjxxj*swxx*swxx + stjwjxj*stjwjxj*sw*swxxxx - stjwjxj*stjwjxj*swxx*swxx - 2*stjwjxj*stjwjxxj*sw*swxxx + 2*stjwjxj*stjwjxxj*swx*swxx + stjwjxxj*stjwjxxj*sw*swxx - stjwjxxj*stjwjxxj*swx*swx - sttjwj*sw*swxx*swxxxx + sttjwj*sw*swxxx*swxxx + sttjwj*swx*swx*swxxxx - 2*sttjwj*swx*swxx*swxxx + sttjwj*swxx*swxx*swxx);
-        double B3_tr = (stjwj*stjwjxj*swxxx*swxxy - stjwj*stjwjxj*swxxxx*swxy - stjwj*stjwjxxj*swxx*swxxy + stjwj*stjwjxxj*swxxx*swxy + stjwj*stjwjyj*swxx*swxxxx - stjwj*stjwjyj*swxxx*swxxx - stjwjxj*stjwjxj*swxx*swxxy + stjwjxj*stjwjxj*swxxxx*swy + stjwjxj*stjwjxxj*swx*swxxy + stjwjxj*stjwjxxj*swxx*swxy - 2*stjwjxj*stjwjxxj*swxxx*swy - stjwjxj*stjwjyj*swx*swxxxx + stjwjxj*stjwjyj*swxx*swxxx - stjwjxxj*stjwjxxj*swx*swxy + stjwjxxj*stjwjxxj*swxx*swy + stjwjxxj*stjwjyj*swx*swxxx - stjwjxxj*stjwjyj*swxx*swxx - sttjwj*swx*swxxx*swxxy + sttjwj*swx*swxxxx*swxy + sttjwj*swxx*swxx*swxxy - sttjwj*swxx*swxxx*swxy - sttjwj*swxx*swxxxx*swy + sttjwj*swxxx*swxxx*swy)/(stjwj*stjwj*swxx*swxxxx - stjwj*stjwj*swxxx*swxxx - 2*stjwj*stjwjxj*swx*swxxxx + 2*stjwj*stjwjxj*swxx*swxxx + 2*stjwj*stjwjxxj*swx*swxxx - 2*stjwj*stjwjxxj*swxx*swxx + stjwjxj*stjwjxj*sw*swxxxx - stjwjxj*stjwjxj*swxx*swxx - 2*stjwjxj*stjwjxxj*sw*swxxx + 2*stjwjxj*stjwjxxj*swx*swxx + stjwjxxj*stjwjxxj*sw*swxx - stjwjxxj*stjwjxxj*swx*swx - sttjwj*sw*swxx*swxxxx + sttjwj*sw*swxxx*swxxx + sttjwj*swx*swx*swxxxx - 2*sttjwj*swx*swxx*swxxx + sttjwj*swxx*swxx*swxx);
-        double B4_tr = (stjwj*swx*swxxx*swxxy - stjwj*swx*swxxxx*swxy - stjwj*swxx*swxx*swxxy + stjwj*swxx*swxxx*swxy + stjwj*swxx*swxxxx*swy - stjwj*swxxx*swxxx*swy - stjwjxj*sw*swxxx*swxxy + stjwjxj*sw*swxxxx*swxy + stjwjxj*swx*swxx*swxxy - stjwjxj*swx*swxxxx*swy - stjwjxj*swxx*swxx*swxy + stjwjxj*swxx*swxxx*swy + stjwjxxj*sw*swxx*swxxy - stjwjxxj*sw*swxxx*swxy - stjwjxxj*swx*swx*swxxy + stjwjxxj*swx*swxx*swxy + stjwjxxj*swx*swxxx*swy - stjwjxxj*swxx*swxx*swy - stjwjyj*sw*swxx*swxxxx + stjwjyj*sw*swxxx*swxxx + stjwjyj*swx*swx*swxxxx - 2*stjwjyj*swx*swxx*swxxx + stjwjyj*swxx*swxx*swxx)/(stjwj*stjwj*swxx*swxxxx - stjwj*stjwj*swxxx*swxxx - 2*stjwj*stjwjxj*swx*swxxxx + 2*stjwj*stjwjxj*swxx*swxxx + 2*stjwj*stjwjxxj*swx*swxxx - 2*stjwj*stjwjxxj*swxx*swxx + stjwjxj*stjwjxj*sw*swxxxx - stjwjxj*stjwjxj*swxx*swxx - 2*stjwjxj*stjwjxxj*sw*swxxx + 2*stjwjxj*stjwjxxj*swx*swxx + stjwjxxj*stjwjxxj*sw*swxx - stjwjxxj*stjwjxxj*swx*swx - sttjwj*sw*swxx*swxxxx + sttjwj*sw*swxxx*swxxx + sttjwj*swx*swx*swxxxx - 2*sttjwj*swx*swxx*swxxx + sttjwj*swxx*swxx*swxx);
+        double B1_tr = (stjwj*stjwj*swxx*swxxy - stjwj*stjwj*swxxx*swxy - 2*stjwj*stjwjxj*swx*swxxy + stjwj*stjwjxj*swxx*swxy + stjwj*stjwjxj*swxxx*swy + stjwj*stjwjxxj*swx*swxy - stjwj*stjwjxxj*swxx*swy + stjwj*stjwjyj*swx*swxxx - stjwj*stjwjyj*swxx*swxx + stjwjxj*stjwjxj*sw*swxxy - stjwjxj*stjwjxj*swxx*swy - stjwjxj*stjwjxxj*sw*swxy + stjwjxj*stjwjxxj*swx*swy - stjwjxj*stjwjyj*sw*swxxx + stjwjxj*stjwjyj*swx*swxx + stjwjxxj*stjwjyj*sw*swxx - stjwjxxj*stjwjyj*swx*swx - sttjwj*sw*swxx*swxxy + sttjwj*sw*swxxx*swxy + sttjwj*swx*swx*swxxy - sttjwj*swx*swxx*swxy - sttjwj*swx*swxxx*swy + sttjwj*swxx*swxx*swy)
+                        /(stjwj*stjwj*swxx*swxxxx - stjwj*stjwj*swxxx*swxxx - 2*stjwj*stjwjxj*swx*swxxxx + 2*stjwj*stjwjxj*swxx*swxxx + 2*stjwj*stjwjxxj*swx*swxxx - 2*stjwj*stjwjxxj*swxx*swxx + stjwjxj*stjwjxj*sw*swxxxx - stjwjxj*stjwjxj*swxx*swxx - 2*stjwjxj*stjwjxxj*sw*swxxx + 2*stjwjxj*stjwjxxj*swx*swxx + stjwjxxj*stjwjxxj*sw*swxx - stjwjxxj*stjwjxxj*swx*swx - sttjwj*sw*swxx*swxxxx + sttjwj*sw*swxxx*swxxx + sttjwj*swx*swx*swxxxx - 2*sttjwj*swx*swxx*swxxx + sttjwj*swxx*swxx*swxx);
+        double B2_tr = (-stjwj*stjwj*swxxx*swxxy + stjwj*stjwj*swxxxx*swxy + stjwj*stjwjxj*swxx*swxxy - stjwj*stjwjxj*swxxxx*swy + stjwj*stjwjxxj*swx*swxxy - 2*stjwj*stjwjxxj*swxx*swxy + stjwj*stjwjxxj*swxxx*swy - stjwj*stjwjyj*swx*swxxxx + stjwj*stjwjyj*swxx*swxxx - stjwjxj*stjwjxxj*sw*swxxy + stjwjxj*stjwjxxj*swxx*swy + stjwjxj*stjwjyj*sw*swxxxx - stjwjxj*stjwjyj*swxx*swxx + stjwjxxj*stjwjxxj*sw*swxy - stjwjxxj*stjwjxxj*swx*swy - stjwjxxj*stjwjyj*sw*swxxx + stjwjxxj*stjwjyj*swx*swxx + sttjwj*sw*swxxx*swxxy - sttjwj*sw*swxxxx*swxy - sttjwj*swx*swxx*swxxy + sttjwj*swx*swxxxx*swy + sttjwj*swxx*swxx*swxy - sttjwj*swxx*swxxx*swy)
+                        /(stjwj*stjwj*swxx*swxxxx - stjwj*stjwj*swxxx*swxxx - 2*stjwj*stjwjxj*swx*swxxxx + 2*stjwj*stjwjxj*swxx*swxxx + 2*stjwj*stjwjxxj*swx*swxxx - 2*stjwj*stjwjxxj*swxx*swxx + stjwjxj*stjwjxj*sw*swxxxx - stjwjxj*stjwjxj*swxx*swxx - 2*stjwjxj*stjwjxxj*sw*swxxx + 2*stjwjxj*stjwjxxj*swx*swxx + stjwjxxj*stjwjxxj*sw*swxx - stjwjxxj*stjwjxxj*swx*swx - sttjwj*sw*swxx*swxxxx + sttjwj*sw*swxxx*swxxx + sttjwj*swx*swx*swxxxx - 2*sttjwj*swx*swxx*swxxx + sttjwj*swxx*swxx*swxx);
+        double B3_tr = (stjwj*stjwjxj*swxxx*swxxy - stjwj*stjwjxj*swxxxx*swxy - stjwj*stjwjxxj*swxx*swxxy + stjwj*stjwjxxj*swxxx*swxy + stjwj*stjwjyj*swxx*swxxxx - stjwj*stjwjyj*swxxx*swxxx - stjwjxj*stjwjxj*swxx*swxxy + stjwjxj*stjwjxj*swxxxx*swy + stjwjxj*stjwjxxj*swx*swxxy + stjwjxj*stjwjxxj*swxx*swxy - 2*stjwjxj*stjwjxxj*swxxx*swy - stjwjxj*stjwjyj*swx*swxxxx + stjwjxj*stjwjyj*swxx*swxxx - stjwjxxj*stjwjxxj*swx*swxy + stjwjxxj*stjwjxxj*swxx*swy + stjwjxxj*stjwjyj*swx*swxxx - stjwjxxj*stjwjyj*swxx*swxx - sttjwj*swx*swxxx*swxxy + sttjwj*swx*swxxxx*swxy + sttjwj*swxx*swxx*swxxy - sttjwj*swxx*swxxx*swxy - sttjwj*swxx*swxxxx*swy + sttjwj*swxxx*swxxx*swy)
+                        /(stjwj*stjwj*swxx*swxxxx - stjwj*stjwj*swxxx*swxxx - 2*stjwj*stjwjxj*swx*swxxxx + 2*stjwj*stjwjxj*swxx*swxxx + 2*stjwj*stjwjxxj*swx*swxxx - 2*stjwj*stjwjxxj*swxx*swxx + stjwjxj*stjwjxj*sw*swxxxx - stjwjxj*stjwjxj*swxx*swxx - 2*stjwjxj*stjwjxxj*sw*swxxx + 2*stjwjxj*stjwjxxj*swx*swxx + stjwjxxj*stjwjxxj*sw*swxx - stjwjxxj*stjwjxxj*swx*swx - sttjwj*sw*swxx*swxxxx + sttjwj*sw*swxxx*swxxx + sttjwj*swx*swx*swxxxx - 2*sttjwj*swx*swxx*swxxx + sttjwj*swxx*swxx*swxx);
+        double B4_tr = (stjwj*swx*swxxx*swxxy - stjwj*swx*swxxxx*swxy - stjwj*swxx*swxx*swxxy + stjwj*swxx*swxxx*swxy + stjwj*swxx*swxxxx*swy - stjwj*swxxx*swxxx*swy - stjwjxj*sw*swxxx*swxxy + stjwjxj*sw*swxxxx*swxy + stjwjxj*swx*swxx*swxxy - stjwjxj*swx*swxxxx*swy - stjwjxj*swxx*swxx*swxy + stjwjxj*swxx*swxxx*swy + stjwjxxj*sw*swxx*swxxy - stjwjxxj*sw*swxxx*swxy - stjwjxxj*swx*swx*swxxy + stjwjxxj*swx*swxx*swxy + stjwjxxj*swx*swxxx*swy - stjwjxxj*swxx*swxx*swy - stjwjyj*sw*swxx*swxxxx + stjwjyj*sw*swxxx*swxxx + stjwjyj*swx*swx*swxxxx - 2*stjwjyj*swx*swxx*swxxx + stjwjyj*swxx*swxx*swxx)
+                        /(stjwj*stjwj*swxx*swxxxx - stjwj*stjwj*swxxx*swxxx - 2*stjwj*stjwjxj*swx*swxxxx + 2*stjwj*stjwjxj*swxx*swxxx + 2*stjwj*stjwjxxj*swx*swxxx - 2*stjwj*stjwjxxj*swxx*swxx + stjwjxj*stjwjxj*sw*swxxxx - stjwjxj*stjwjxj*swxx*swxx - 2*stjwjxj*stjwjxxj*sw*swxxx + 2*stjwjxj*stjwjxxj*swx*swxx + stjwjxxj*stjwjxxj*sw*swxx - stjwjxxj*stjwjxxj*swx*swx - sttjwj*sw*swxx*swxxxx + sttjwj*sw*swxxx*swxxx + sttjwj*swx*swx*swxxxx - 2*sttjwj*swx*swxx*swxxx + sttjwj*swxx*swxx*swxx);
 
         // calculate the least squares parameters for the non transit model
-        double B1_nt = (sw*swxx*swxxy - sw*swxxx*swxy - swx*swx*swxxy + swx*swxx*swxy + swx*swxxx*swy - swxx*swxx*swy)/(sw*swxx*swxxxx - sw*swxxx*swxxx - swx*swx*swxxxx + 2*swx*swxx*swxxx - swxx*swxx*swxx);
-        double B2_nt = (-sw*swxxx*swxxy + sw*swxxxx*swxy + swx*swxx*swxxy - swx*swxxxx*swy - swxx*swxx*swxy + swxx*swxxx*swy)/(sw*swxx*swxxxx - sw*swxxx*swxxx - swx*swx*swxxxx + 2*swx*swxx*swxxx - swxx*swxx*swxx);
-        double B3_nt = (swx*swxxx*swxxy - swx*swxxxx*swxy - swxx*swxx*swxxy + swxx*swxxx*swxy + swxx*swxxxx*swy - swxxx*swxxx*swy)/(sw*swxx*swxxxx - sw*swxxx*swxxx - swx*swx*swxxxx + 2*swx*swxx*swxxx - swxx*swxx*swxx);
+        double B1_nt = (sw*swxx*swxxy - sw*swxxx*swxy - swx*swx*swxxy + swx*swxx*swxy + swx*swxxx*swy - swxx*swxx*swy)
+                        /(sw*swxx*swxxxx - sw*swxxx*swxxx - swx*swx*swxxxx + 2*swx*swxx*swxxx - swxx*swxx*swxx);
+        double B2_nt = (-sw*swxxx*swxxy + sw*swxxxx*swxy + swx*swxx*swxxy - swx*swxxxx*swy - swxx*swxx*swxy + swxx*swxxx*swy)
+                        /(sw*swxx*swxxxx - sw*swxxx*swxxx - swx*swx*swxxxx + 2*swx*swxx*swxxx - swxx*swxx*swxx);
+        double B3_nt = (swx*swxxx*swxxy - swx*swxxxx*swxy - swxx*swxx*swxxy + swxx*swxxx*swxy + swxx*swxxxx*swy - swxxx*swxxx*swy)
+                        /(sw*swxx*swxxxx - sw*swxxx*swxxx - swx*swx*swxxxx + 2*swx*swxx*swxxx - swxx*swxx*swxx);
 
         // require some minimum depth
         if (B4_tr < (min_depth_ppm * 1e-6)) {
@@ -401,15 +408,22 @@ __global__ void detrender_k2(
     double B1, B2, B3;
     if (stjwj > 0.0){
         // contains transit, use these eqns
-        B1 = (stjwj*stjwj*swxx*swxxy - stjwj*stjwj*swxxx*swxy - 2*stjwj*stjwjxj*swx*swxxy + stjwj*stjwjxj*swxx*swxy + stjwj*stjwjxj*swxxx*swy + stjwj*stjwjxxj*swx*swxy - stjwj*stjwjxxj*swxx*swy + stjwj*stjwjyj*swx*swxxx - stjwj*stjwjyj*swxx*swxx + stjwjxj*stjwjxj*sw*swxxy - stjwjxj*stjwjxj*swxx*swy - stjwjxj*stjwjxxj*sw*swxy + stjwjxj*stjwjxxj*swx*swy - stjwjxj*stjwjyj*sw*swxxx + stjwjxj*stjwjyj*swx*swxx + stjwjxxj*stjwjyj*sw*swxx - stjwjxxj*stjwjyj*swx*swx - sttjwj*sw*swxx*swxxy + sttjwj*sw*swxxx*swxy + sttjwj*swx*swx*swxxy - sttjwj*swx*swxx*swxy - sttjwj*swx*swxxx*swy + sttjwj*swxx*swxx*swy)/(stjwj*stjwj*swxx*swxxxx - stjwj*stjwj*swxxx*swxxx - 2*stjwj*stjwjxj*swx*swxxxx + 2*stjwj*stjwjxj*swxx*swxxx + 2*stjwj*stjwjxxj*swx*swxxx - 2*stjwj*stjwjxxj*swxx*swxx + stjwjxj*stjwjxj*sw*swxxxx - stjwjxj*stjwjxj*swxx*swxx - 2*stjwjxj*stjwjxxj*sw*swxxx + 2*stjwjxj*stjwjxxj*swx*swxx + stjwjxxj*stjwjxxj*sw*swxx - stjwjxxj*stjwjxxj*swx*swx - sttjwj*sw*swxx*swxxxx + sttjwj*sw*swxxx*swxxx + sttjwj*swx*swx*swxxxx - 2*sttjwj*swx*swxx*swxxx + sttjwj*swxx*swxx*swxx);
-        B2 = (-stjwj*stjwj*swxxx*swxxy + stjwj*stjwj*swxxxx*swxy + stjwj*stjwjxj*swxx*swxxy - stjwj*stjwjxj*swxxxx*swy + stjwj*stjwjxxj*swx*swxxy - 2*stjwj*stjwjxxj*swxx*swxy + stjwj*stjwjxxj*swxxx*swy - stjwj*stjwjyj*swx*swxxxx + stjwj*stjwjyj*swxx*swxxx - stjwjxj*stjwjxxj*sw*swxxy + stjwjxj*stjwjxxj*swxx*swy + stjwjxj*stjwjyj*sw*swxxxx - stjwjxj*stjwjyj*swxx*swxx + stjwjxxj*stjwjxxj*sw*swxy - stjwjxxj*stjwjxxj*swx*swy - stjwjxxj*stjwjyj*sw*swxxx + stjwjxxj*stjwjyj*swx*swxx + sttjwj*sw*swxxx*swxxy - sttjwj*sw*swxxxx*swxy - sttjwj*swx*swxx*swxxy + sttjwj*swx*swxxxx*swy + sttjwj*swxx*swxx*swxy - sttjwj*swxx*swxxx*swy)/(stjwj*stjwj*swxx*swxxxx - stjwj*stjwj*swxxx*swxxx - 2*stjwj*stjwjxj*swx*swxxxx + 2*stjwj*stjwjxj*swxx*swxxx + 2*stjwj*stjwjxxj*swx*swxxx - 2*stjwj*stjwjxxj*swxx*swxx + stjwjxj*stjwjxj*sw*swxxxx - stjwjxj*stjwjxj*swxx*swxx - 2*stjwjxj*stjwjxxj*sw*swxxx + 2*stjwjxj*stjwjxxj*swx*swxx + stjwjxxj*stjwjxxj*sw*swxx - stjwjxxj*stjwjxxj*swx*swx - sttjwj*sw*swxx*swxxxx + sttjwj*sw*swxxx*swxxx + sttjwj*swx*swx*swxxxx - 2*sttjwj*swx*swxx*swxxx + sttjwj*swxx*swxx*swxx);
-        B3 = (stjwj*stjwjxj*swxxx*swxxy - stjwj*stjwjxj*swxxxx*swxy - stjwj*stjwjxxj*swxx*swxxy + stjwj*stjwjxxj*swxxx*swxy + stjwj*stjwjyj*swxx*swxxxx - stjwj*stjwjyj*swxxx*swxxx - stjwjxj*stjwjxj*swxx*swxxy + stjwjxj*stjwjxj*swxxxx*swy + stjwjxj*stjwjxxj*swx*swxxy + stjwjxj*stjwjxxj*swxx*swxy - 2*stjwjxj*stjwjxxj*swxxx*swy - stjwjxj*stjwjyj*swx*swxxxx + stjwjxj*stjwjyj*swxx*swxxx - stjwjxxj*stjwjxxj*swx*swxy + stjwjxxj*stjwjxxj*swxx*swy + stjwjxxj*stjwjyj*swx*swxxx - stjwjxxj*stjwjyj*swxx*swxx - sttjwj*swx*swxxx*swxxy + sttjwj*swx*swxxxx*swxy + sttjwj*swxx*swxx*swxxy - sttjwj*swxx*swxxx*swxy - sttjwj*swxx*swxxxx*swy + sttjwj*swxxx*swxxx*swy)/(stjwj*stjwj*swxx*swxxxx - stjwj*stjwj*swxxx*swxxx - 2*stjwj*stjwjxj*swx*swxxxx + 2*stjwj*stjwjxj*swxx*swxxx + 2*stjwj*stjwjxxj*swx*swxxx - 2*stjwj*stjwjxxj*swxx*swxx + stjwjxj*stjwjxj*sw*swxxxx - stjwjxj*stjwjxj*swxx*swxx - 2*stjwjxj*stjwjxxj*sw*swxxx + 2*stjwjxj*stjwjxxj*swx*swxx + stjwjxxj*stjwjxxj*sw*swxx - stjwjxxj*stjwjxxj*swx*swx - sttjwj*sw*swxx*swxxxx + sttjwj*sw*swxxx*swxxx + sttjwj*swx*swx*swxxxx - 2*sttjwj*swx*swxx*swxxx + sttjwj*swxx*swxx*swxx);
-        // double B4 = (stjwj*swx*swxxx*swxxy - stjwj*swx*swxxxx*swxy - stjwj*swxx*swxx*swxxy + stjwj*swxx*swxxx*swxy + stjwj*swxx*swxxxx*swy - stjwj*swxxx*swxxx*swy - stjwjxj*sw*swxxx*swxxy + stjwjxj*sw*swxxxx*swxy + stjwjxj*swx*swxx*swxxy - stjwjxj*swx*swxxxx*swy - stjwjxj*swxx*swxx*swxy + stjwjxj*swxx*swxxx*swy + stjwjxxj*sw*swxx*swxxy - stjwjxxj*sw*swxxx*swxy - stjwjxxj*swx*swx*swxxy + stjwjxxj*swx*swxx*swxy + stjwjxxj*swx*swxxx*swy - stjwjxxj*swxx*swxx*swy - stjwjyj*sw*swxx*swxxxx + stjwjyj*sw*swxxx*swxxx + stjwjyj*swx*swx*swxxxx - 2*stjwjyj*swx*swxx*swxxx + stjwjyj*swxx*swxx*swxx)/(stjwj*stjwj*swxx*swxxxx - stjwj*stjwj*swxxx*swxxx - 2*stjwj*stjwjxj*swx*swxxxx + 2*stjwj*stjwjxj*swxx*swxxx + 2*stjwj*stjwjxxj*swx*swxxx - 2*stjwj*stjwjxxj*swxx*swxx + stjwjxj*stjwjxj*sw*swxxxx - stjwjxj*stjwjxj*swxx*swxx - 2*stjwjxj*stjwjxxj*sw*swxxx + 2*stjwjxj*stjwjxxj*swx*swxx + stjwjxxj*stjwjxxj*sw*swxx - stjwjxxj*stjwjxxj*swx*swx - sttjwj*sw*swxx*swxxxx + sttjwj*sw*swxxx*swxxx + sttjwj*swx*swx*swxxxx - 2*sttjwj*swx*swxx*swxxx + sttjwj*swxx*swxx*swxx);
+        B1 = (stjwj*stjwj*swxx*swxxy - stjwj*stjwj*swxxx*swxy - 2*stjwj*stjwjxj*swx*swxxy + stjwj*stjwjxj*swxx*swxy + stjwj*stjwjxj*swxxx*swy + stjwj*stjwjxxj*swx*swxy - stjwj*stjwjxxj*swxx*swy + stjwj*stjwjyj*swx*swxxx - stjwj*stjwjyj*swxx*swxx + stjwjxj*stjwjxj*sw*swxxy - stjwjxj*stjwjxj*swxx*swy - stjwjxj*stjwjxxj*sw*swxy + stjwjxj*stjwjxxj*swx*swy - stjwjxj*stjwjyj*sw*swxxx + stjwjxj*stjwjyj*swx*swxx + stjwjxxj*stjwjyj*sw*swxx - stjwjxxj*stjwjyj*swx*swx - sttjwj*sw*swxx*swxxy + sttjwj*sw*swxxx*swxy + sttjwj*swx*swx*swxxy - sttjwj*swx*swxx*swxy - sttjwj*swx*swxxx*swy + sttjwj*swxx*swxx*swy)
+            /(stjwj*stjwj*swxx*swxxxx - stjwj*stjwj*swxxx*swxxx - 2*stjwj*stjwjxj*swx*swxxxx + 2*stjwj*stjwjxj*swxx*swxxx + 2*stjwj*stjwjxxj*swx*swxxx - 2*stjwj*stjwjxxj*swxx*swxx + stjwjxj*stjwjxj*sw*swxxxx - stjwjxj*stjwjxj*swxx*swxx - 2*stjwjxj*stjwjxxj*sw*swxxx + 2*stjwjxj*stjwjxxj*swx*swxx + stjwjxxj*stjwjxxj*sw*swxx - stjwjxxj*stjwjxxj*swx*swx - sttjwj*sw*swxx*swxxxx + sttjwj*sw*swxxx*swxxx + sttjwj*swx*swx*swxxxx - 2*sttjwj*swx*swxx*swxxx + sttjwj*swxx*swxx*swxx);
+        B2 = (-stjwj*stjwj*swxxx*swxxy + stjwj*stjwj*swxxxx*swxy + stjwj*stjwjxj*swxx*swxxy - stjwj*stjwjxj*swxxxx*swy + stjwj*stjwjxxj*swx*swxxy - 2*stjwj*stjwjxxj*swxx*swxy + stjwj*stjwjxxj*swxxx*swy - stjwj*stjwjyj*swx*swxxxx + stjwj*stjwjyj*swxx*swxxx - stjwjxj*stjwjxxj*sw*swxxy + stjwjxj*stjwjxxj*swxx*swy + stjwjxj*stjwjyj*sw*swxxxx - stjwjxj*stjwjyj*swxx*swxx + stjwjxxj*stjwjxxj*sw*swxy - stjwjxxj*stjwjxxj*swx*swy - stjwjxxj*stjwjyj*sw*swxxx + stjwjxxj*stjwjyj*swx*swxx + sttjwj*sw*swxxx*swxxy - sttjwj*sw*swxxxx*swxy - sttjwj*swx*swxx*swxxy + sttjwj*swx*swxxxx*swy + sttjwj*swxx*swxx*swxy - sttjwj*swxx*swxxx*swy)
+            /(stjwj*stjwj*swxx*swxxxx - stjwj*stjwj*swxxx*swxxx - 2*stjwj*stjwjxj*swx*swxxxx + 2*stjwj*stjwjxj*swxx*swxxx + 2*stjwj*stjwjxxj*swx*swxxx - 2*stjwj*stjwjxxj*swxx*swxx + stjwjxj*stjwjxj*sw*swxxxx - stjwjxj*stjwjxj*swxx*swxx - 2*stjwjxj*stjwjxxj*sw*swxxx + 2*stjwjxj*stjwjxxj*swx*swxx + stjwjxxj*stjwjxxj*sw*swxx - stjwjxxj*stjwjxxj*swx*swx - sttjwj*sw*swxx*swxxxx + sttjwj*sw*swxxx*swxxx + sttjwj*swx*swx*swxxxx - 2*sttjwj*swx*swxx*swxxx + sttjwj*swxx*swxx*swxx);
+        B3 = (stjwj*stjwjxj*swxxx*swxxy - stjwj*stjwjxj*swxxxx*swxy - stjwj*stjwjxxj*swxx*swxxy + stjwj*stjwjxxj*swxxx*swxy + stjwj*stjwjyj*swxx*swxxxx - stjwj*stjwjyj*swxxx*swxxx - stjwjxj*stjwjxj*swxx*swxxy + stjwjxj*stjwjxj*swxxxx*swy + stjwjxj*stjwjxxj*swx*swxxy + stjwjxj*stjwjxxj*swxx*swxy - 2*stjwjxj*stjwjxxj*swxxx*swy - stjwjxj*stjwjyj*swx*swxxxx + stjwjxj*stjwjyj*swxx*swxxx - stjwjxxj*stjwjxxj*swx*swxy + stjwjxxj*stjwjxxj*swxx*swy + stjwjxxj*stjwjyj*swx*swxxx - stjwjxxj*stjwjyj*swxx*swxx - sttjwj*swx*swxxx*swxxy + sttjwj*swx*swxxxx*swxy + sttjwj*swxx*swxx*swxxy - sttjwj*swxx*swxxx*swxy - sttjwj*swxx*swxxxx*swy + sttjwj*swxxx*swxxx*swy)
+            /(stjwj*stjwj*swxx*swxxxx - stjwj*stjwj*swxxx*swxxx - 2*stjwj*stjwjxj*swx*swxxxx + 2*stjwj*stjwjxj*swxx*swxxx + 2*stjwj*stjwjxxj*swx*swxxx - 2*stjwj*stjwjxxj*swxx*swxx + stjwjxj*stjwjxj*sw*swxxxx - stjwjxj*stjwjxj*swxx*swxx - 2*stjwjxj*stjwjxxj*sw*swxxx + 2*stjwjxj*stjwjxxj*swx*swxx + stjwjxxj*stjwjxxj*sw*swxx - stjwjxxj*stjwjxxj*swx*swx - sttjwj*sw*swxx*swxxxx + sttjwj*sw*swxxx*swxxx + sttjwj*swx*swx*swxxxx - 2*sttjwj*swx*swxx*swxxx + sttjwj*swxx*swxx*swxx);
+//         B4 = (stjwj*swx*swxxx*swxxy - stjwj*swx*swxxxx*swxy - stjwj*swxx*swxx*swxxy + stjwj*swxx*swxxx*swxy + stjwj*swxx*swxxxx*swy - stjwj*swxxx*swxxx*swy - stjwjxj*sw*swxxx*swxxy + stjwjxj*sw*swxxxx*swxy + stjwjxj*swx*swxx*swxxy - stjwjxj*swx*swxxxx*swy - stjwjxj*swxx*swxx*swxy + stjwjxj*swxx*swxxx*swy + stjwjxxj*sw*swxx*swxxy - stjwjxxj*sw*swxxx*swxy - stjwjxxj*swx*swx*swxxy + stjwjxxj*swx*swxx*swxy + stjwjxxj*swx*swxxx*swy - stjwjxxj*swxx*swxx*swy - stjwjyj*sw*swxx*swxxxx + stjwjyj*sw*swxxx*swxxx + stjwjyj*swx*swx*swxxxx - 2*stjwjyj*swx*swxx*swxxx + stjwjyj*swxx*swxx*swxx)
+//             /(stjwj*stjwj*swxx*swxxxx - stjwj*stjwj*swxxx*swxxx - 2*stjwj*stjwjxj*swx*swxxxx + 2*stjwj*stjwjxj*swxx*swxxx + 2*stjwj*stjwjxxj*swx*swxxx - 2*stjwj*stjwjxxj*swxx*swxx + stjwjxj*stjwjxj*sw*swxxxx - stjwjxj*stjwjxj*swxx*swxx - 2*stjwjxj*stjwjxxj*sw*swxxx + 2*stjwjxj*stjwjxxj*swx*swxx + stjwjxxj*stjwjxxj*sw*swxx - stjwjxxj*stjwjxxj*swx*swx - sttjwj*sw*swxx*swxxxx + sttjwj*sw*swxxx*swxxx + sttjwj*swx*swx*swxxxx - 2*sttjwj*swx*swxx*swxxx + sttjwj*swxx*swxx*swxx);
     } else {
         // no transit, use these eqns
-        B1 = (sw*swxx*swxxy - sw*swxxx*swxy - swx*swx*swxxy + swx*swxx*swxy + swx*swxxx*swy - swxx*swxx*swy)/(sw*swxx*swxxxx - sw*swxxx*swxxx - swx*swx*swxxxx + 2*swx*swxx*swxxx - swxx*swxx*swxx);
-        B2 = (-sw*swxxx*swxxy + sw*swxxxx*swxy + swx*swxx*swxxy - swx*swxxxx*swy - swxx*swxx*swxy + swxx*swxxx*swy)/(sw*swxx*swxxxx - sw*swxxx*swxxx - swx*swx*swxxxx + 2*swx*swxx*swxxx - swxx*swxx*swxx);
-        B3 = (swx*swxxx*swxxy - swx*swxxxx*swxy - swxx*swxx*swxxy + swxx*swxxx*swxy + swxx*swxxxx*swy - swxxx*swxxx*swy)/(sw*swxx*swxxxx - sw*swxxx*swxxx - swx*swx*swxxxx + 2*swx*swxx*swxxx - swxx*swxx*swxx);
+        B1 = (sw*swxx*swxxy - sw*swxxx*swxy - swx*swx*swxxy + swx*swxx*swxy + swx*swxxx*swy - swxx*swxx*swy)
+            /(sw*swxx*swxxxx - sw*swxxx*swxxx - swx*swx*swxxxx + 2*swx*swxx*swxxx - swxx*swxx*swxx);
+        B2 = (-sw*swxxx*swxxy + sw*swxxxx*swxy + swx*swxx*swxxy - swx*swxxxx*swy - swxx*swxx*swxy + swxx*swxxx*swy)
+            /(sw*swxx*swxxxx - sw*swxxx*swxxx - swx*swx*swxxxx + 2*swx*swxx*swxxx - swxx*swxx*swxx);
+        B3 = (swx*swxxx*swxxy - swx*swxxxx*swxy - swxx*swxx*swxxy + swxx*swxxx*swxy + swxx*swxxxx*swy - swxxx*swxxx*swy)
+            /(sw*swxx*swxxxx - sw*swxxx*swxxx - swx*swx*swxxxx + 2*swx*swxx*swxxx - swxx*swxx*swxx);
     }
 
     // determine and record the trend
@@ -434,9 +448,6 @@ __global__ void monotransit_search(
     float * depth,  // the depth array (to be filled)
     float * vdepth  // the depth variance array (to be filled)
 ){
-
-    // open the array in shared memory
-//     extern __shared__ char sm[];
     // specify the shared memory array locations and types
     float * sm_tmodel = (float*)sm;
     float * sm1 = (float*)&sm_tmodel[tm_size];
@@ -448,10 +459,6 @@ __global__ void monotransit_search(
         if (sm_idx >= tm_size) break;
         sm_tmodel[sm_idx] = tmodel[sm_idx];
     }
-
-    // index of this thread into the second and third shared memory arrays
-//     const int sm1_ptr = threadIdx.x + tm_size;
-//     const int sm2_ptr = sm1_ptr + blockDim.x;
 
     // duration index
     const int dur_id = blockIdx.y;
@@ -488,6 +495,8 @@ __global__ void monotransit_search(
         // compute the index of the first and last in-transit points
         int itr_frst_idx = lrintf(ceilf(ts / cadence)) ;
         int itr_last_idx = lrintf(floorf((ts+duration) / cadence));
+        // clip first indices to start of light curve
+        itr_frst_idx = max(itr_frst_idx, 0);
         // clip last index to end of light curve
         itr_last_idx = min(itr_last_idx, lc_size-1);
         // width of the transit window
@@ -496,11 +505,13 @@ __global__ void monotransit_search(
         // loop over the light curve in the transit window
         for (int i = 0; i <= itr_size; i += blockDim.x){
             int lc_idx = itr_frst_idx + i + threadIdx.x;
+
+            // it shouldn't be because we clipped but just in case...
+            if (lc_idx < 0) continue;
             if (lc_idx >= lc_size) break;
 
             // skip if the light curve point has infinite error (i.e. zero weight)
-            float w = wght[lc_idx];
-            if (w == 0.0f) continue;
+            if (wght[lc_idx] == 0.0f) continue;
 
             // find the nearest model point index
             int model_idx = lrintf(( time[lc_idx] - ts ) / duration * tm_size);
@@ -511,7 +522,7 @@ __global__ void monotransit_search(
             // transit depth implied by this light curve point
             float local_depth = flux[lc_idx] / modval;
             // weight of this light curve point
-            float local_weight = modval * modval * w;
+            float local_weight = modval * modval * wght[lc_idx];
 
             // accumulate the depth and weight
             sm1[threadIdx.x] += local_depth * local_weight;
@@ -548,11 +559,13 @@ __global__ void monotransit_search(
         // now loop through the transit window again and calculate the log-likelihood
         for (int i = 0; i <= itr_size; i += blockDim.x){
             int lc_idx = itr_frst_idx + i + threadIdx.x;
-            if (lc_idx > lc_size) break;
+
+            // it shouldn't be because we clipped but just in case...
+            if (lc_idx < 0) continue;
+            if (lc_idx >= lc_size) break;
 
             // skip if the light curve point has infinite error (i.e. zero weight)
-            float w = wght[lc_idx];
-            if (w == 0.0f) continue;
+            if (wght[lc_idx] == 0.0f) continue;
 
             // find the nearest model point index
             int model_idx = lrintf(( time[lc_idx] - ts ) / duration * tm_size);
@@ -562,7 +575,7 @@ __global__ void monotransit_search(
 
             // log-likelihood of in-transit points
             float resid = modval * wav_depth - flux[lc_idx];
-            sm1[threadIdx.x] += (-0.5f * resid * resid * w);
+            sm1[threadIdx.x] += (-0.5f * resid * resid * wght[lc_idx]);
 
             // the second part of the log-likelihood is:
             //     -0.5 * log(2 * pi * error^2)
@@ -571,7 +584,7 @@ __global__ void monotransit_search(
 
             // subtract constant flux log-likelihood of in-transit points
             // to get the likelihood ratio
-            sm1[threadIdx.x] -= (-0.5f * flux[lc_idx] * flux[lc_idx] * w);
+            sm1[threadIdx.x] -= (-0.5f * flux[lc_idx] * flux[lc_idx] * wght[lc_idx]);
         }
 
         // syncthreads needed in cases where block size > 32
@@ -651,11 +664,7 @@ __global__ void periodic_search_k1(
     // variable declarations
     bool null = false;
 
-//     // open the array in shared memory
-//     extern __shared__ float sm[];
     // pointers for the array in shared memory - split it in half
-//     int sm_ptr_lr = threadIdx.x;               // likelihood ratio
-//     int sm_ptr_id = threadIdx.x + blockDim.x;  // thread index
     float * sm_lr = (float*)&sm;
     float * sm_id = (float*)&sm_lr[blockDim.x];
 
@@ -791,11 +800,7 @@ __global__ void periodic_search_k2(
     int * t0_idx_out,  // reference time index array (single element - to be filled)
     const int in_arr_len  // length of input arrays
 ){
-//     // open the array in shared memory
-//     extern __shared__ float sm[];
     // pointers for the 2 arrays in shared memory
-//     int sm_ptr_lr = threadIdx.x;             // likelihood ratio
-//     int sm_ptr_id = threadIdx.x + blockDim.x;  // thread index
     float * sm_lr = (float*)&sm;
     float * sm_id = (float*)&sm_lr[blockDim.x];
 
@@ -808,7 +813,9 @@ __global__ void periodic_search_k2(
     for (int i = 0 ; i <= in_arr_len ; i += blockDim.x){
         int idx = i + threadIdx.x;
         if (idx >= in_arr_len) break;
-        if ((isnan(sm_lr[threadIdx.x])) || ((lrat_in[idx] > sm_lr[threadIdx.x]) && (!isnan(lrat_in[idx])))){
+        if (   (isnan(sm_lr[threadIdx.x]))
+            || ((lrat_in[idx] > sm_lr[threadIdx.x]) && (!isnan(lrat_in[idx])))
+            ){
             sm_lr[threadIdx.x] = lrat_in[idx];
             sm_id[threadIdx.x] = 1.0f * idx;
         }
@@ -818,7 +825,9 @@ __global__ void periodic_search_k2(
     // final reduction through shared memory
     for (int s = blockDim.x / 2; s > 0; s >>= 1){
         if (threadIdx.x < s) {
-            if ((isnan(sm_lr[threadIdx.x])) || ((sm_lr[threadIdx.x + s] > sm_lr[threadIdx.x]) && (!isnan(sm_lr[threadIdx.x+s])))) {
+            if (   (isnan(sm_lr[threadIdx.x]))
+                || ((sm_lr[threadIdx.x + s] > sm_lr[threadIdx.x]) && (!isnan(sm_lr[threadIdx.x+s])))
+                ) {
                 sm_lr[threadIdx.x] = sm_lr[threadIdx.x+s];
                 sm_id[threadIdx.x] = sm_id[threadIdx.x+s];
             }

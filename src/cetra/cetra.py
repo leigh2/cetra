@@ -39,7 +39,6 @@ class LightCurve(object):
     """
     def __init__(self, times, fluxes, flux_errors):
         """
-        CHECKED
         Basic light curve validation and class instance initialisation.
 
         Parameters
@@ -136,7 +135,7 @@ class LightCurve(object):
     def copy(self):
         return deepcopy(self)
 
-    def mask_transit(self, transit):
+    def mask_transit(self, transit, fractional_border=0.0):
         """
         Mask a transit (single or periodic)
 
@@ -144,14 +143,16 @@ class LightCurve(object):
         ----------
         transit : Transit
             The transit to mask
+        fractional_border : float, optional
+            An additional fraction of the duration to incorporate as a border
+            to ensure that all in-transit flux is removed. Default 0.0, i.e.
+            no additional border.
 
         Returns
         -------
         LightCurve instance with the transit removed, np.ndarray that is `True`
         while in-transit and `False` otherwise.
         """
-        # todo maybe allow some user-specific border as fraction of the duration
-
         # are we periodic?
         periodic = transit.period is not None
 
@@ -159,9 +160,13 @@ class LightCurve(object):
         phase = self.time - transit.t0
         if periodic:
             phase %= transit.period
+            phase[phase > 0.5 * transit.period] -= transit.period
+
+        # deal with the border
+        duration_multiplier = 1.0 + fractional_border
 
         # generate the mask
-        itr_mask = np.abs(phase/transit.duration) < 0.5
+        itr_mask = np.abs(phase) < transit.duration * 0.5 * duration_multiplier
 
         # generate a new LightCurve
         LC_new = LightCurve(
@@ -216,7 +221,6 @@ class LightCurve(object):
 
     def resample(self, new_cadence, cuda_blocksize=1024):
         """
-        CHECKED
         Resample the light curve at a new cadence.
 
         Parameters
@@ -339,8 +343,6 @@ class Transit(object):
         -------
         A new Transit instance
         """
-        raise NotImplementedError("This function needs modification after the shift to t0")
-
         # verify that period bounds are given if required
         if self.period is not None and period_bounds is None:
             raise RuntimeError(
@@ -349,7 +351,7 @@ class Transit(object):
 
         # interpolator using the original transit model
         _tm = interp1d(
-            np.linspace(0.0, 1.0, model.size),
+            np.linspace(-0.5, 0.5, model.size),
             1.0 - model,
             kind='linear',
             copy=True,
@@ -361,17 +363,14 @@ class Transit(object):
         # the model function
         def _mod_func(_time, _t0, _duration, _depth, _period=None):
             if period_bounds is None:
-                # _t0, _duration, _depth = params
                 _phase = _time - _t0
                 _model = _tm(_phase / _duration) * _depth
             else:
-                # _t0, _duration, _depth, _period = params
                 _phase = (_time - _t0) % _period
                 _model = _tm(_phase / _duration) * _depth
-
             return _model
 
-	# set the starting point and bounds arrays
+        # set the starting point and bounds arrays
         if period_bounds is None:
             p0 = np.array([self.t0, self.duration, self.depth])
             bounds = (
@@ -385,11 +384,15 @@ class Transit(object):
                 np.array([t0_bounds[1], duration_bounds[1], depth_bounds[1], period_bounds[1]]),
             )
 
-	# run the bounded least squares optimisation
+        # NaN fluxes are fine elsewhere but not here, remove them
+        valid = np.isfinite(self.lightcurve.offset_flux)
+        _t, _f, _e = map(lambda arr: arr[valid], [
+            self.lightcurve.time, self.lightcurve.offset_flux, self.lightcurve.offset_flux_error
+        ])
+
+        # run the bounded least squares optimisation
         popt, pcov = curve_fit(
-            _mod_func, self.lightcurve.time, self.lightcurve.offset_flux, p0,
-            sigma=self.lightcurve.offset_flux_error, absolute_sigma=False,
-            bounds=bounds, x_scale='jac'
+            _mod_func, _t, _f, p0, sigma=_e, absolute_sigma=False, bounds=bounds, x_scale='jac'
         )
         perr = np.sqrt(np.diag(pcov))
 
@@ -750,7 +753,6 @@ class TransitDetector(object):
             verbose=True
     ):
         """
-        CHECKED
         Initialise the transit detector.
 
         Parameters
@@ -860,6 +862,9 @@ class TransitDetector(object):
             print(f"{self.duration_count} durations, "
                   f"{self.durations[0]:.2f} -> {self.durations[-1]:.2f} days")
 
+        # send the durations to the gpu
+        self.durations_gpu = to_gpu(self.durations, np.float32)
+
         # Pad the light curve with null data to make simpler the algorithm
         # that searches for transits that begin before or end after the data.
         # This requires a regular observing cadence, another benefit of our
@@ -958,10 +963,6 @@ class TransitDetector(object):
         self.like_ratio_2d_gpu = None
         self.depth_2d_gpu = None
         self.var_depth_2d_gpu = None
-        self.offset_flux_gpu = None
-        self.flux_weight_gpu = None
-        self.offset_time_gpu = None
-        self.durations_gpu = None
         self.monotransit_result = None
         self.periodogram_result = None
 
@@ -1295,7 +1296,7 @@ class TransitDetector(object):
 
     def monotransit_search(self, n_warps=4096, verbose=True):
         """
-        Perform a grid search in t_start and duration for transit-like signals
+        Perform a grid search in t0 and duration for transit-like signals
         in the light curve.
 
         Parameters
@@ -1332,14 +1333,6 @@ class TransitDetector(object):
         self.depth_2d_gpu = gpuarray.empty(outshape_2d, dtype=np.float32)
         self.var_depth_2d_gpu = gpuarray.empty(outshape_2d, dtype=np.float32)
 
-        # send the light curve to the gpu
-        self.offset_time_gpu = to_gpu(self.lc.offset_time, np.float32)
-        self.offset_flux_gpu = to_gpu(self.lc.offset_flux, np.float32)
-        self.flux_weight_gpu = to_gpu(self.lc.flux_weight, np.float32)
-
-        # send the durations to the gpu
-        self.durations_gpu = to_gpu(self.durations, np.float32)
-
         # block and grid sizes
         block_size = 32, 1, 1  # 1 warp per block
         grid_size = int(np.ceil(n_warps / outshape_2d[0])), int(outshape_2d[0])
@@ -1360,7 +1353,8 @@ class TransitDetector(object):
 
         # run the kernel
         _monotransit_search(
-            self.offset_time_gpu, self.offset_flux_gpu, self.flux_weight_gpu, _cadence, _n_elem,
+            self.offset_time_gpu_f4, self.offset_flux_gpu_f4, self.flux_weight_gpu_f4,
+            _cadence, _n_elem,
             self.offset_transit_model_gpu_f4, _tm_size,
             self.durations_gpu, _duration_count,
             _t0_stride_length, _t0_stride_count,
@@ -1407,7 +1401,6 @@ class TransitDetector(object):
             verbose=True
     ):
         """
-        CHECKED
         Obtain the light curve trend, after a preliminary filtering of transit signals.
 
         Parameters
@@ -1461,9 +1454,6 @@ class TransitDetector(object):
         flux_trend_gpu = gpuarray.empty(self.lc.num_points, dtype=np.float64)
         num_pts_gpu = gpuarray.empty(self.lc.num_points, dtype=np.int32)
 
-        # send the durations to the gpu
-        self.durations_gpu = to_gpu(self.durations, np.float32)
-
         # block and grid sizes
         block_size = 32, 1, 1  # 1 warp per block
         grid_size_k1 = int(np.ceil(n_warps / outshape_2d[0])), int(outshape_2d[0])
@@ -1493,6 +1483,9 @@ class TransitDetector(object):
         _tm_size = np.int32(self.transit_model_size)
         _duration_count = np.int32(self.duration_count)
         _t0_stride_count = np.int32(self.num_t0_strides)
+
+        # record the start time
+        _t0 = time()
 
         # run the kernel
         _detrender_k1(
@@ -1541,7 +1534,6 @@ class TransitDetector(object):
             for n, d in enumerate(self.durations):
                 itr2d = np.abs(self.t0s - t0) < (0.5 * (duration + d))
                 _ll[n, itr2d] = np.nan
-        print("found", len(transits), "transits")
 
         # send the transit mask to the gpu
         _transit_mask_gpu_f8 = to_gpu(_transit_mask, np.float64)
@@ -1557,6 +1549,16 @@ class TransitDetector(object):
             flux_trend_gpu, num_pts_gpu,
             block=block_size, grid=grid_size_k2
         )
+
+        # make sure the operation is finished before recording the time
+        # (device calls are asynchronous)
+        drv.Context.synchronize()
+
+        # record the stop time and report the elapsed time
+        _t1 = time()
+        if verbose:
+            print(f"completed in {_t1 - _t0:.3f} seconds")
+            print(f"found {len(transits)} transits")
 
         # todo: I think no need to return dBIC after development is finished
         return delta_BIC_gpu.get(), _transit_mask, flux_trend_gpu.get(), num_pts_gpu.get()
