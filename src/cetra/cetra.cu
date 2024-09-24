@@ -712,8 +712,8 @@ __global__ void periodic_search_k1(
         n_transits += 1;
     }
 
-    // nullify this thread if there were no transits
-    if (n_transits == 0){
+    // nullify this thread if there were fewer than 2 transits
+    if (n_transits < 2){
         null = true;
     }
 
