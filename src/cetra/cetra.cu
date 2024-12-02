@@ -431,8 +431,8 @@ __global__ void detrender_k2(
     trend[lc_idx] = (float) B1*tt*tt + B2*tt + B3;
 }
 
-// monotransit search
-__global__ void monotransit_search(
+// linear search
+__global__ void linear_search(
     const float * time,  // offset time array
     const float * flux,  // offset flux array
     const float * wght,  // offset flux weight array
@@ -485,7 +485,7 @@ __global__ void monotransit_search(
         // calculate ts, the transit start time
         float ts = t0_num * t0_stride_length - 0.5 * duration;
 
-        // zero out the second and third arrays in shared memory
+        // zero out the non transit model portion of the shared memory
         sm1[threadIdx.x] = 0.0f;
         sm2[threadIdx.x] = 0.0f;
 
@@ -539,7 +539,7 @@ __global__ void monotransit_search(
         // calculate the maximum likelihood transit depth
         float wav_depth = sm1[0] / sm2[0];
         float var_depth = 1.0f / sm2[0];
-        // send the depth to the output arrays
+        // send the depth, variance and obs count to the output arrays
         depth[arr2d_ptr] = wav_depth;
         vdepth[arr2d_ptr] = var_depth;
 
@@ -549,7 +549,7 @@ __global__ void monotransit_search(
             continue;
         };
 
-        // zero out the non transit-model portion of the shared memory again
+        // zero out the non transit model portion of the shared memory again
         sm1[threadIdx.x] = 0.0f;
         sm2[threadIdx.x] = 0.0f;
 
@@ -600,9 +600,9 @@ __global__ void monotransit_search(
 
 // light curve resampling - stage 1
 __global__ void resample_k1(
-    const double * time,  // input light curve observation time array
-    const double * flux,  // input light curve offset flux array
-    const double * ferr,  // input light curve offset flux error array
+    const double * time,  // input light curve offset time array (i.e. time - ref time)
+    const double * flux,  // input light curve flux array
+    const double * ferr,  // input light curve flux error array
     const double cadence,  // desired output cadence
     const int n_elem,  // number of elements in input light curve
     double * sum_of_weighted_flux,  // array of sum(f*w)
@@ -629,17 +629,15 @@ __global__ void resample_k1(
 __global__ void resample_k2(
     const double * sum_fw,  // array of sum(offset flux * weight)
     const double * sum_w,  // array of sum(weight)
-    double * rflux,  // array of weighted average flux relative to baseline
-    double * eflux,  // array of error on weighted average flux relative to baseline
+    double * rflux,  // array of weighted average flux
+    double * eflux,  // array of error on weighted average flux
     const int n_elem
 ){
     const int x_idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (x_idx >= n_elem) return;
 
-    // note! in the call from python, eflux and sum_w point to the same array...
-
     // compute inverse variance weighted relative flux
-    rflux[x_idx] = 1.0 - sum_fw[x_idx] / sum_w[x_idx];
+    rflux[x_idx] = sum_fw[x_idx] / sum_w[x_idx];
 
     // compute error on above
     eflux[x_idx] = rsqrt(sum_w[x_idx]);
@@ -689,6 +687,7 @@ __global__ void periodic_search_k1(
     // accumulators
     float _sum_dw = 0.0;
     float _sum_w = 0.0;
+    // accumulate the number of transits
     int n_transits = 0;
     // loop through the input arrays to determine the maximum likelihood depth
     for (int i = 0; i < max_transit_count; i++){
