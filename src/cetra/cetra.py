@@ -34,6 +34,11 @@ _resample_kernel_2 = cu_src.get_function("resample_k2")
 _linear_search_kernel = cu_src.get_function("linear_search")
 _periodic_search_k1 = cu_src.get_function("periodic_search_k1")
 _periodic_search_k2 = cu_src.get_function("periodic_search_k2")
+# detrending kernels
+_detrender_quadfit = cu_src.get_function("detrender_quadfit")
+_detrender_qtrfit = cu_src.get_function("detrender_qtrfit")
+_detrender_calc_IC = cu_src.get_function("detrender_calc_IC")
+_detrender_fit_trend = cu_src.get_function("detrender_fit_trend")
 
 
 class LightCurve(object):
@@ -157,6 +162,10 @@ class LightCurve(object):
             - 0.5 * self.offset_flux ** 2 / self.offset_flux_error**2
             - 0.5 * np.log(2 * np.pi * self.offset_flux_error**2)
         )
+
+        # these will be populated if we run detrending on the light curve
+        self.offset_trend = None
+        self.error_multiplier = None
 
         if verbose:
             # report the input light curve information
@@ -698,6 +707,344 @@ class TransitDetector(object):
         self.linear_result = None
         self.periodic_result = None
 
+    def get_trend(
+            self,
+            detection_kernel_width, detrending_kernel_width,
+            IC_type=0, dIC_threshold=10.0,
+            min_depth_ppm=10.0, min_obs_count=20,
+            full_output=False, n_warps=4096,
+            verbose=True
+    ):
+        """
+        Obtain the trend of the light curve using a quadratic+transit model,
+        after a preliminary identification of likely transit signals.
+
+        Parameters
+        ----------
+        detection_kernel_width : float
+            Width of the detection kernel in days. This might be motivated by
+            some prior knowledge about the activity or rotation rate of the
+            target, but should be longer than the maximum transit duration.
+        detrending_kernel_width : float
+            Width of the detrending kernel in days. This might be motivated by
+            some prior knowledge about the activity or rotation rate of the
+            target, but should be longer than the maximum transit duration.
+        IC_type : int
+            The information criterion type.
+            0 is Bayesian (default), 1 is Akaike.
+        dIC_threshold : float
+            The information criterion difference threshold to use to select
+            regions in the t0,duration space in which the quadratic+transit
+            model is more likely than the quadratic model. The statistic is
+            defined as dIC = IC_quadratic - IC_transit, so larger dIC values
+            mean the quad+transit model is more preferred. Default 10.
+        min_depth_ppm : float, optional
+            Minimum transit depth to consider in ppm. Default 10 ppm.
+        min_obs_count : int, optional
+            Minimum number of observations required in the kernel window. Default 20.
+        full_output : bool, optional
+            If `True`, returns some intermediate arrays. If `False` (the default),
+            nothing is returned.
+        n_warps : int, optional
+            The number of warps to use, default 4096. We want this to be around
+            a low integer multiple of the number of concurrent warps able to
+            run on the GPU.
+            The A100 has 108 SMs * 64 warps = 6912 concurrent warps.
+            The RTX A5000 has 64 SMs * 48 warps = 3072 concurrent warps.
+            Striding in this way limits the number of reads of the transit
+            model from global into shared memory. This value shouldn't
+            exceed the number of t0 strides times the number of durations.
+        verbose : bool, optional
+            If `True`, reports with additional verbosity.
+
+        Returns
+        -------
+        If `full_output == True`, then arrays of:
+            1) The number of data points in each detection kernel window
+                ndarray of len(t0_array)
+            2) The log-likelihoods of the quadratic models
+                ndarray of len(t0_array)
+            3) The log-likelihoods of the quadratic+transit models
+                ndarray of shape (len(durations), len(t0_array))
+            4) The delta IC array
+                ndarray of shape (len(durations), len(t0_array))
+            5) The transit(s) model
+                ndarray of len(light curve)
+            6) The fitted trend array
+                ndarray of len(light curve)
+            7) The estimated error multiplier
+                single floating point value
+        """
+        # verify the IC type input
+        if IC_type not in [0, 1]:
+            raise ValueError("Information criterion type must be int(0) or int(1).")
+
+        if verbose:
+            print("obtaining trend")
+
+        # step 1, fit the basic quadratic models while storing some
+        # intermediate variables.
+        # compute the log-likelihoods
+        # these are the same for all durations, so we can save time (vs. a
+        # previous version of this code) by doing it only once for all
+        # durations
+
+        # log-likelihood of the quadratic model
+        ll_quad = gpuarray.empty(self.num_t0_strides, dtype=np.float64)
+        # intermediate variables:
+        #   key for variable names:
+        #       s: sum
+        #       w: weight
+        #       x: time
+        #       y: flux
+        sw = gpuarray.zeros(self.num_t0_strides, np.float64)
+        swx = gpuarray.zeros(self.num_t0_strides, np.float64)
+        swy = gpuarray.zeros(self.num_t0_strides, np.float64)
+        swxx = gpuarray.zeros(self.num_t0_strides, np.float64)
+        swxy = gpuarray.zeros(self.num_t0_strides, np.float64)
+        swxxx = gpuarray.zeros(self.num_t0_strides, np.float64)
+        swxxy = gpuarray.zeros(self.num_t0_strides, np.float64)
+        swxxxx = gpuarray.zeros(self.num_t0_strides, np.float64)
+        # number of data points in window
+        num_pts = gpuarray.zeros(self.num_t0_strides, np.int32)
+
+        # block and grid sizes
+        block_size_k1 = 512, 1, 1
+        grid_size_k1 = int(np.ceil(self.num_t0_strides / block_size_k1[0])), 1
+        # no shared memory needed for this kernel
+
+        # type specification
+        _detection_kernel_half_width = np.int32(
+            np.ceil(0.5 * detection_kernel_width / self.lc.cadence)
+        )
+        _cadence = np.float32(self.lc.cadence)
+        _t0_stride_length = np.float32(self.t0_stride_length)
+        _min_in_window = np.int32(min_obs_count)
+        _n_elem = np.int32(self.lc.size)
+        _t0_stride_count = np.int32(self.num_t0_strides)
+
+        # send the light curve to the gpu
+        _time = to_gpu(self.lc.offset_time, np.float64)
+        _flux = to_gpu(self.lc.offset_flux, np.float64)
+        _wght = to_gpu(self.lc.flux_weight, np.float64)
+
+        # record the start time
+        _k1_start_time = time()
+
+        # run the quadratic fit kernel
+        _detrender_quadfit(
+            _time, _flux, _wght,
+            _detection_kernel_half_width, _min_in_window, _cadence, _n_elem,
+            _t0_stride_length, _t0_stride_count,
+            sw, swx, swy, swxx, swxy, swxxx, swxxy, swxxxx,
+            num_pts, ll_quad,
+            block=block_size_k1, grid=grid_size_k1
+        )
+
+        # make sure the operation is finished before recording the time
+        # (device calls are asynchronous)
+        drv.Context.synchronize()
+
+        # record the stop time
+        _k1_stop_time = time()
+        # report elapsed
+        if verbose:
+            print(f"kernel 1 completed in {_k1_stop_time - _k1_start_time:.3f} seconds")
+
+        # step 2, fit the quadratic plus transit models for a range of transit
+        # durations.
+        # compute the log-likelihoods
+
+        # initialise output arrays on the gpu
+        # t0s are along the rows, durations along columns
+        # i.e.
+        # [[t0,d0  t1,d0  t2,d0]
+        #  [t0,d1  t1,d1  t2,d1]
+        #  [t0,d2  t1,d2  t2,d2]]
+        # Numpy and C are row-major
+        outshape_2d = self.duration_count, self.num_t0_strides
+        ll_qtr = gpuarray.empty(outshape_2d, dtype=np.float64)
+
+        # block and grid sizes
+        block_size_k2 = 32, 1, 1  # 1 warp per block
+        grid_size_k2 = int(np.ceil(n_warps / outshape_2d[0])), int(outshape_2d[0])
+        # shared memory size -
+        #     space for the transit model as f64
+        #     + 6 elements per thread for the f64 intermediate arrays
+        smem_size_k2 = int(
+            8 * self.transit_model.size
+            + 8 * 6 * block_size_k2[0]
+        )
+
+        # type specification
+        _min_depth_ppm = np.float32(min_depth_ppm)
+        _tm_size = np.int32(self.transit_model.size)
+        _duration_count = np.int32(self.duration_count)
+
+        # record the start time
+        _k2_start_time = time()
+
+        # run the quadratic fit kernel
+        _detrender_qtrfit(
+            _time, _flux, _wght, _detection_kernel_half_width,
+            _min_depth_ppm, _min_in_window, _cadence, _n_elem,
+            self.transit_model.offset_model_gpu_f8, _tm_size,
+            self.durations_gpu_f4, _duration_count,
+            _t0_stride_length, _t0_stride_count,
+            sw, swx, swy, swxx, swxy, swxxx, swxxy, swxxxx,
+            num_pts, ll_qtr,
+            block=block_size_k2, grid=grid_size_k2, shared=smem_size_k2
+        )
+
+        # make sure the operation is finished before recording the time
+        # (device calls are asynchronous)
+        drv.Context.synchronize()
+
+        # record the stop time
+        _k2_stop_time = time()
+        # report elapsed
+        if verbose:
+            print(f"kernel 2 completed in {_k2_stop_time - _k2_start_time:.3f} seconds")
+
+        # step 3, compute the information criteria
+
+        # create the output array
+        delta_IC = gpuarray.empty(outshape_2d, dtype=np.float64)
+
+        # block and grid sizes
+        block_size_k3 = 512, 1, 1
+        grid_size_k3 = (int(np.ceil(self.num_t0_strides / block_size_k3[0])),
+                        int(np.ceil(self.duration_count / block_size_k3[1])))
+
+        # record the start time
+        _k3_start_time = time()
+
+        # run the information criteria calculation kernel
+        _detrender_calc_IC(
+            ll_quad, ll_qtr, num_pts,
+            _min_in_window, np.int32(0),
+            _duration_count, _t0_stride_count,
+            delta_IC,
+            block=block_size_k3, grid=grid_size_k3
+        )
+
+        # make sure the operation is finished before recording the time
+        # (device calls are asynchronous)
+        drv.Context.synchronize()
+
+        # record the stop time
+        _k3_stop_time = time()
+        # report elapsed
+        _search_stop_time = time()
+        if verbose:
+            print(f"kernel 3 completed in {_k3_stop_time - _k3_start_time:.3f} seconds")
+
+        # step 4, build the model containing the likely transits
+
+        # record the start time
+        _s4_start_time = time()
+
+        # the transit mask
+        # we're looking to specify the transits in the light curve time array
+        # NOT the t0 array that we've been using up until now
+        _transit_mask = np.zeros(self.lc.size, dtype=np.float64)
+
+        # grab the delta IC array from the device
+        _delta_IC = delta_IC.get()
+        # nullify elements below the dIC threshold
+        _delta_IC[_delta_IC < dIC_threshold] = np.nan
+
+        # collapse the dIC array to obtain the duration index of the highest
+        # dIC for a given t0 column
+        # must be mindful of the fact that there are likely many all-nan
+        # columns
+        # this might be done more efficiently on the GPU, but let's get it
+        # working first and see how slow it is
+        allnan = np.count_nonzero(~np.isnan(_delta_IC), axis=0) == 0
+        _delta_IC[np.isnan(_delta_IC)] = -np.inf
+        idx = np.argmax(_delta_IC, axis=0, keepdims=True)
+        # these are the non-null t0s and their corresponding best durations
+        # and dICs
+        _t0 = self.t0_array[~allnan]
+        _dur = self.durations[idx[0][~allnan]]
+        _dIC = np.take_along_axis(_delta_IC, idx, axis=0)[0][~allnan]
+
+        # now work from the most to least likely transit, populating the
+        # transit mask array
+        while np.any(np.isfinite(_dIC)):
+            max_dIC_idx = np.nanargmax(_dIC)
+            t0 = _t0[max_dIC_idx]
+            dur = _dur[max_dIC_idx]
+            # generate the model with just this transit
+            _tm = 1.0 - self.transit_model.interpolator((self.lc.time - t0)/dur + 0.5)
+            # check whether this transit mask overlaps an existing transit
+            if not np.any(_transit_mask[_tm > 0] > 0):
+                # add this transit to the mask
+                _transit_mask += _tm
+            # nullify this region in the _dIC array
+            _dIC[np.abs(_t0 - t0) < (0.5 * dur)] = np.nan
+
+        # record the stop time
+        _s4_stop_time = time()
+        # report elapsed
+        _search_stop_time = time()
+        if verbose:
+            print(f"step 4 completed in {_s4_stop_time - _s4_start_time:.3f} seconds")
+
+        # step 5, fit the light curve plus complete transit model
+
+        # send the transit(s) mask to the gpu
+        _transit_mask_gpu_f8 = to_gpu(_transit_mask, np.float64)
+
+        # create the trend array on the gpu
+        _trend = gpuarray.empty(self.lc.size, dtype=np.float64)
+
+        # block and grid sizes
+        block_size_k4 = 512, 1, 1
+        grid_size_k4 = int(np.ceil(self.lc.size / block_size_k4[0])), 1
+
+        # type specification for detrending kernel
+        _detrending_kernel_half_width = np.int32(
+            np.ceil(0.5 * detrending_kernel_width / self.lc.cadence)
+        )
+
+        # record the start time
+        _k4_start_time = time()
+
+        # run the fitting kernel
+        _detrender_fit_trend(
+            _time, _flux, _wght, _transit_mask_gpu_f8,
+            _detrending_kernel_half_width, _min_in_window,
+            _n_elem, _trend,
+            block=block_size_k4, grid=grid_size_k4
+        )
+
+        # make sure the operation is finished before recording the time
+        # (device calls are asynchronous)
+        drv.Context.synchronize()
+
+        # record the stop time
+        _k4_stop_time = time()
+        # report elapsed
+        if verbose:
+            print(f"kernel 4 completed in {_k4_stop_time - _k4_start_time:.3f} seconds")
+
+        # read the trend from the device
+        trend = _trend.get()
+
+        # measure the error multiplier
+        std_resids = np.abs(self.lc.offset_flux - trend) / self.lc.offset_flux_error
+        to_include = np.isfinite(std_resids) & (_transit_mask == 0.0)
+        error_multiplier = np.median(std_resids[to_include]) * 1.4826
+
+        # record the results
+        self.lc.offset_trend = trend
+        self.lc.error_multiplier = error_multiplier
+
+        if full_output:
+            return (num_pts.get(), ll_quad.get(), ll_qtr.get(),
+                    delta_IC.get(), _transit_mask, trend, error_multiplier)
+
     def linear_search(self, n_warps=4096, verbose=True):
         """
         Perform a grid search in t0 and duration for transit-like signals
@@ -752,10 +1099,25 @@ class TransitDetector(object):
         _t0_stride_length = np.float32(self.t0_stride_length)
         _t0_stride_count = np.int32(self.num_t0_strides)
 
+        # subtract the trend if available
+        if self.lc.offset_trend is not None:
+            if verbose:
+                print("trend available, subtracting")
+            working_flux = self.lc.offset_flux - self.lc.offset_trend
+        else:
+            working_flux = self.lc.offset_flux
+        # apply the error multiplier if available
+        if self.lc.error_multiplier is not None:
+            if verbose:
+                print(f"error multiplier (x{self.lc.error_multiplier:.3f}) available, applying")
+            working_weights = self.lc.flux_weight / self.lc.error_multiplier**2
+        else:
+            working_weights = self.lc.flux_weight
+
         # send the relevant arrays to the gpu
         _time = to_gpu(self.lc.offset_time, np.float32)
-        _flux = to_gpu(self.lc.offset_flux, np.float32)
-        _weight = to_gpu(self.lc.flux_weight, np.float32)
+        _flux = to_gpu(working_flux, np.float32)
+        _weight = to_gpu(working_weights, np.float32)
 
         # record the start time
         _kernal_start_time = time()
@@ -935,6 +1297,10 @@ class TransitDetector(object):
             periodogram['var_depth'][n] = ret[2]
             periodogram['t0_idx'][n] = ret[3]
             periodogram['duration_idx'][n] = ret[4]
+
+        # make sure the operation is finished before recording the time
+        # (device calls are asynchronous)
+        drv.Context.synchronize()
 
         # record the stop time and report elapsed
         _search_stop_time = time()
@@ -1195,7 +1561,7 @@ def period_grid(
 ):
     """
     Generates the optimal period grid.
-    Grabbed this nice code from TLS. Thanks again Hippke and Heller!
+    Grabbed this nice code from TLS. Thanks Hippke and Heller!
 
     Parameters
     ----------
@@ -1267,7 +1633,7 @@ def period_grid(
 def max_t14(star_radius, star_mass, period, upper_limit=0.12, small_planet=False):
     """
     Compute the maximum transit duration.
-    No need to reinvent the wheel here, thanks Hippke and Heller!
+    No need to reinvent the wheel here, thanks again Hippke and Heller!
     https://github.com/hippke/tls/blob/master/transitleastsquares/grid.py#L10
 
     Parameters
@@ -1282,7 +1648,7 @@ def max_t14(star_radius, star_mass, period, upper_limit=0.12, small_planet=False
         Maximum transit duration as a fraction of period (default 0.12)
     small_planet : bool, optional
         If True, uses the small planet assumption (i.e. the planet radius relative
-        to the stellar radius is negligible). Otherwise uses a 2* Jupiter radius
+        to the stellar radius is negligible). Otherwise, uses a 2* Jupiter radius
         planet (the default).
 
     Returns
@@ -1315,3 +1681,7 @@ def max_t14(star_radius, star_mass, period, upper_limit=0.12, small_planet=False
         result = upper_limit
 
     return result
+
+
+if __name__ == "__main__":
+    raise RuntimeError("Don't try to run this module directly")

@@ -30,8 +30,156 @@ __device__ void warpSumReductioni(volatile int* sdata, int tid) {
     sdata[tid] += sdata[tid + 1];
 }
 
-// detrender - get BICs
-__global__ void detrender_k1(
+// detrender - quadratic-only fit
+__global__ void detrender_quadfit(
+    const double * time,  // offset time array
+    const double * flux,  // offset flux array
+    const double * wght,  // offset flux weight array
+    const int kernel_half_width,  // half-width of the detection kernel in samples
+    const int min_obs_in_window,  // the minimum acceptable number of observations in the window
+    const float cadence,  // the cadence of the light curve
+    const int lc_size,  // number of light curve elements
+    const float t0_stride_length,  // the number of reference times per duration
+    const int t0_stride_count,  // number of reference time strides
+    double * sw,  // intermediate value (to be filled)
+    double * swx,  // intermediate value (to be filled)
+    double * swy,  // intermediate value (to be filled)
+    double * swxx,  // intermediate value (to be filled)
+    double * swxy,  // intermediate value (to be filled)
+    double * swxxx,  // intermediate value (to be filled)
+    double * swxxy,  // intermediate value (to be filled)
+    double * swxxxx,  // intermediate value (to be filled)
+    int * num_pts,  // number of points in window (to be filled)
+    double * ll_quad  // the log-likelihood of the quadratic model (to be filled)
+){
+    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+    if (tid >= t0_stride_count) return;
+
+    // compute the reference time
+    float t0 = tid * t0_stride_length;
+
+    // compute the index of the first and last points in the window
+    int frst_idx = lrintf(t0 / cadence) - kernel_half_width;
+    int last_idx = lrintf(t0 / cadence) + kernel_half_width;
+
+    // accumulators
+    double _sw = 0.0;
+    double _swx = 0.0;
+    double _swy = 0.0;
+    double _swxx = 0.0;
+    double _swxy = 0.0;
+    double _swxxx = 0.0;
+    double _swxxy = 0.0;
+    double _swxxxx = 0.0;
+    int _num_pts = 0;
+
+    // loop over the light curve in the detrending window
+    for (int lc_idx = frst_idx; lc_idx <= last_idx; lc_idx++){
+
+        // deal with light curve ends
+        if (lc_idx < 0) continue;
+        if (lc_idx >= lc_size) break;
+
+        // skip if the light curve point has infinite error (i.e. zero weight)
+        double lc_w = (double) wght[lc_idx];
+        if (lc_w == 0.0) continue;
+
+        // grab the values of time and flux to make the following code more readable
+        // (assume the compiler is smart)
+        double lc_t = (double) time[lc_idx];
+        double lc_f = (double) flux[lc_idx];
+        // we don't want to use the absolute value of time because the floating
+        // point errors make a difference when you take the fourth power...
+        double delta_t = lc_t - t0;
+
+        // accumulate various values
+        _sw += lc_w;
+        _swx += lc_w * delta_t;
+        _swy += lc_w * lc_f;
+        _swxx += lc_w * delta_t * delta_t;
+        _swxy += lc_w * delta_t * lc_f;
+        _swxxx += lc_w * delta_t * delta_t * delta_t;
+        _swxxy += lc_w * delta_t * delta_t * lc_f;
+        _swxxxx += lc_w * delta_t * delta_t * delta_t * delta_t;
+        _num_pts += 1;
+    }
+
+    // nothing more to do if there were insufficient data points
+    num_pts[tid] = _num_pts;
+    if (_num_pts < min_obs_in_window) {
+        sw[tid] = nan(0);
+        swx[tid] = nan(0);
+        swy[tid] = nan(0);
+        swxx[tid] = nan(0);
+        swxy[tid] = nan(0);
+        swxxx[tid] = nan(0);
+        swxxy[tid] = nan(0);
+        swxxxx[tid] = nan(0);
+        ll_quad[tid] = nan(0);
+        return;
+    }
+
+    // send these intermediate values to the output arrays
+    sw[tid] = _sw;
+    swx[tid] = _swx;
+    swy[tid] = _swy;
+    swxx[tid] = _swxx;
+    swxy[tid] = _swxy;
+    swxxx[tid] = _swxxx;
+    swxxy[tid] = _swxxy;
+    swxxxx[tid] = _swxxxx;
+
+    /*
+    B1 is the quadratic coefficient
+    B2 is the linear coefficient
+    B3 is the constant coefficient
+    i.e.
+    f(t) = B1*t^2 + B2*t + B3
+    */
+
+    // calculate the least squares parameters for the quadratic model
+    double B1 = (_sw*_swxx*_swxxy - _sw*_swxxx*_swxy - _swx*_swx*_swxxy + _swx*_swxx*_swxy + _swx*_swxxx*_swy - _swxx*_swxx*_swy)
+                 /(_sw*_swxx*_swxxxx - _sw*_swxxx*_swxxx - _swx*_swx*_swxxxx + 2*_swx*_swxx*_swxxx - _swxx*_swxx*_swxx);
+    double B2 = (-_sw*_swxxx*_swxxy + _sw*_swxxxx*_swxy + _swx*_swxx*_swxxy - _swx*_swxxxx*_swy - _swxx*_swxx*_swxy + _swxx*_swxxx*_swy)
+                 /(_sw*_swxx*_swxxxx - _sw*_swxxx*_swxxx - _swx*_swx*_swxxxx + 2*_swx*_swxx*_swxxx - _swxx*_swxx*_swxx);
+    double B3 = (_swx*_swxxx*_swxxy - _swx*_swxxxx*_swxy - _swxx*_swxx*_swxxy + _swxx*_swxxx*_swxy + _swxx*_swxxxx*_swy - _swxxx*_swxxx*_swy)
+                 /(_sw*_swxx*_swxxxx - _sw*_swxxx*_swxxx - _swx*_swx*_swxxxx + 2*_swx*_swxx*_swxxx - _swxx*_swxx*_swxx);
+
+    // now loop through the detrending window again to calculate the log likelihood
+    double _ll_sum = 0.0;
+    for (int lc_idx = frst_idx; lc_idx <= last_idx; lc_idx++){
+
+        // deal with light curve ends
+        if (lc_idx < 0) continue;
+        if (lc_idx >= lc_size) break;
+
+        // skip if the light curve point has infinite error (i.e. zero weight)
+        double lc_w = (double) wght[lc_idx];
+        if (lc_w == 0.0) continue;
+
+        // grab the values of time and flux to make the following code more readable
+        // (assume the compiler is smart)
+        double lc_t = (double) time[lc_idx];
+        double lc_f = (double) flux[lc_idx];
+        // we don't want to use the absolute value of time because the floating
+        // point errors make a difference when you take the fourth power...
+        double delta_t = lc_t - t0;
+
+        // compute the best fit models for this point
+        double model_flux = B1 * delta_t * delta_t + B2 * delta_t + B3;
+
+        // compute the residual
+        double resid = model_flux - lc_f;
+        double e_term = -0.5 * log(2.0 * M_PI / lc_w);
+        _ll_sum += (-0.5 * resid * resid * lc_w) + e_term;
+    }
+
+    // send the log likelihood to the output array
+    ll_quad[tid] = _ll_sum;
+}
+
+// detrender - quadratic plus transit fit
+__global__ void detrender_qtrfit(
     const double * time,  // offset time array
     const double * flux,  // offset flux array
     const double * wght,  // offset flux weight array
@@ -46,28 +194,26 @@ __global__ void detrender_k1(
     const int n_durations,  // the number of durations
     const float t0_stride_length,  // the number of reference times per duration
     const int t0_stride_count,  // number of reference time strides
-    float * delta_BIC,  // the BIC difference array (to be filled)
-    float * ll_tr  // the log-likelihood of the transit model (to be filled)
+    const double * sw,  // intermediate value
+    const double * swx,  // intermediate value
+    const double * swy,  // intermediate value
+    const double * swxx,  // intermediate value
+    const double * swxy,  // intermediate value
+    const double * swxxx,  // intermediate value
+    const double * swxxy,  // intermediate value
+    const double * swxxxx,  // intermediate value
+    const int * num_pts,  // number of points in detrending window
+    double * ll_qtr  // the log-likelihood of the quad+transit model (to be filled)
 ){
     // specify the shared memory array locations and types
     // todo: could set these with metaprogramming, maybe there is performance to be gained...
     double * sm_tmodel = (double*)sm;
-    double * sm_sw = (double*)&sm_tmodel[tm_size];
-    double * sm_swx = (double*)&sm_sw[blockDim.x];
-    double * sm_swy = (double*)&sm_swx[blockDim.x];
-    double * sm_swxx = (double*)&sm_swy[blockDim.x];
-    double * sm_swxy = (double*)&sm_swxx[blockDim.x];
-    double * sm_swxxx = (double*)&sm_swxy[blockDim.x];
-    double * sm_swxxy = (double*)&sm_swxxx[blockDim.x];
-    double * sm_swxxxx = (double*)&sm_swxxy[blockDim.x];
-    double * sm_stjwj = (double*)&sm_swxxxx[blockDim.x];
+    double * sm_stjwj = (double*)&sm_tmodel[tm_size];
     double * sm_sttjwj = (double*)&sm_stjwj[blockDim.x];
     double * sm_stjwjxj = (double*)&sm_sttjwj[blockDim.x];
     double * sm_stjwjyj = (double*)&sm_stjwjxj[blockDim.x];
     double * sm_stjwjxxj = (double*)&sm_stjwjyj[blockDim.x];
-    double * sm_ll_nt = (double*)&sm_stjwjxxj[blockDim.x];
-    double * sm_ll_tr = (double*)&sm_ll_nt[blockDim.x];
-    int * sm_num_pts = (int*)&sm_ll_tr[blockDim.x];  // todo check this
+    double * sm_ll_tr = (double*)&sm_stjwjxxj[blockDim.x];
 
     // read the transit model into shared memory
     for (int i = 0; i < tm_size; i += blockDim.x){
@@ -96,27 +242,23 @@ __global__ void detrender_k1(
         // 2d output array pointer
         int arr2d_ptr = t0_num + t0_stride_count * dur_id;
 
+        // if there are too few data points in the window, skip this loop
+        if (num_pts[t0_num] < min_obs_in_window){
+            ll_qtr[arr2d_ptr] = nan(0);
+            continue;
+        }
+
         // calculate ts, the transit start time
         float t0 = t0_num * t0_stride_length;
         float ts = t0 - 0.5 * duration;
 
         // zero out the additional arrays in shared memory
-        sm_sw[threadIdx.x] = 0.0;
-        sm_swx[threadIdx.x] = 0.0;
-        sm_swy[threadIdx.x] = 0.0;
-        sm_swxx[threadIdx.x] = 0.0;
-        sm_swxy[threadIdx.x] = 0.0;
-        sm_swxxx[threadIdx.x] = 0.0;
-        sm_swxxy[threadIdx.x] = 0.0;
-        sm_swxxxx[threadIdx.x] = 0.0;
         sm_stjwj[threadIdx.x] = 0.0;
         sm_sttjwj[threadIdx.x] = 0.0;
         sm_stjwjxj[threadIdx.x] = 0.0;
         sm_stjwjyj[threadIdx.x] = 0.0;
         sm_stjwjxxj[threadIdx.x] = 0.0;
-        sm_ll_nt[threadIdx.x] = 0.0;
         sm_ll_tr[threadIdx.x] = 0.0;
-        sm_num_pts[threadIdx.x] = 0;
 
         // syncthreads needed in cases where block size > 32
         __syncthreads();
@@ -127,20 +269,11 @@ __global__ void detrender_k1(
         // compute the indices of the first and last detection kernel points
         int dtr_frst_idx = lrintf(t0 / cadence) - kernel_half_width;
         int dtr_last_idx = lrintf(t0 / cadence) + kernel_half_width;
-        // clip first indices to start of light curve
-        itr_frst_idx = max(itr_frst_idx, 0);
-        dtr_frst_idx = max(dtr_frst_idx, 0);
-        // clip last indices to end of light curve
-        itr_last_idx = min(itr_last_idx, lc_size-1);
-        dtr_last_idx = min(dtr_last_idx, lc_size-1);
-        // width of the detrending window
-        int dtr_size = dtr_last_idx - dtr_frst_idx + 1;
 
-        // loop over the light curve in the detrending window
-        for (int i = 0; i <= dtr_size; i += blockDim.x){
-            int lc_idx = dtr_frst_idx + i + threadIdx.x;
+        // loop over the light curve in the transit window
+        for (int lc_idx = (itr_frst_idx + threadIdx.x); lc_idx <= itr_last_idx; lc_idx += blockDim.x){
 
-            // it shouldn't be because we clipped but just in case...
+            // deal with light curve ends
             if (lc_idx < 0) continue;
             if (lc_idx >= lc_size) break;
 
@@ -156,58 +289,24 @@ __global__ void detrender_k1(
             // point errors make a difference when you take the fourth power...
             double delta_t = lc_t - t0;
 
-            // accumulate various values
-            sm_sw[threadIdx.x] += lc_w;
-            sm_swx[threadIdx.x] += lc_w * delta_t;
-            sm_swy[threadIdx.x] += lc_w * lc_f;
-            sm_swxx[threadIdx.x] += lc_w * delta_t * delta_t;
-            sm_swxy[threadIdx.x] += lc_w * delta_t * lc_f;
-            sm_swxxx[threadIdx.x] += lc_w * delta_t * delta_t * delta_t;
-            sm_swxxy[threadIdx.x] += lc_w * delta_t * delta_t * lc_f;
-            sm_swxxxx[threadIdx.x] += lc_w * delta_t * delta_t * delta_t * delta_t;
-            sm_num_pts[threadIdx.x] += 1;
+            // find the nearest model point index
+            int model_idx = lrintf(( lc_t - ts ) / duration * tm_size);
+            // just in case we're out of bounds:
+            if ((model_idx < 0) || (model_idx >= tm_size)) continue;
+            double modval = (double) sm_tmodel[model_idx];
 
-            // is this point in the transit window?
-            if ((lc_idx >= itr_frst_idx) & (lc_idx <= itr_last_idx)) {
-                // find the nearest model point index
-                int model_idx = lrintf(( lc_t - ts ) / duration * tm_size);
-                // just in case we're out of bounds:
-                if ((model_idx < 0) || (model_idx >= tm_size)) continue;
-                double modval = (double) sm_tmodel[model_idx];
-
-                // accumulate some additional values
-                sm_stjwj[threadIdx.x] += lc_w * modval;
-                sm_sttjwj[threadIdx.x] += lc_w * modval * modval;
-                sm_stjwjxj[threadIdx.x] += lc_w * modval * delta_t;
-                sm_stjwjyj[threadIdx.x] += lc_w * modval * lc_f;
-                sm_stjwjxxj[threadIdx.x] += lc_w * modval * delta_t * delta_t;
-            }
+            // accumulate some additional values
+            sm_stjwj[threadIdx.x] += lc_w * modval;
+            sm_sttjwj[threadIdx.x] += lc_w * modval * modval;
+            sm_stjwjxj[threadIdx.x] += lc_w * modval * delta_t;
+            sm_stjwjyj[threadIdx.x] += lc_w * modval * lc_f;
+            sm_stjwjxxj[threadIdx.x] += lc_w * modval * delta_t * delta_t;
         }
 
         // syncthreads needed in cases where block size > 32
         __syncthreads();
 
-        // count the number of points first, if there were none we can stop here
-        warpSumReductioni(sm_num_pts, threadIdx.x);
-        // syncthreads needed in cases where block size > 32
-        __syncthreads();
-        // pull out the value and skip the rest of the loop if too few observations
-        int num_pts = sm_num_pts[0];
-        if (num_pts < min_obs_in_window){
-            delta_BIC[arr2d_ptr] = nanf(0);
-            ll_tr[arr2d_ptr] = nanf(0);
-            continue;
-        };
-
         // sum reduction of the additional arrays in shared memory
-        warpSumReductiond(sm_sw, threadIdx.x);
-        warpSumReductiond(sm_swx, threadIdx.x);
-        warpSumReductiond(sm_swy, threadIdx.x);
-        warpSumReductiond(sm_swxx, threadIdx.x);
-        warpSumReductiond(sm_swxy, threadIdx.x);
-        warpSumReductiond(sm_swxxx, threadIdx.x);
-        warpSumReductiond(sm_swxxy, threadIdx.x);
-        warpSumReductiond(sm_swxxxx, threadIdx.x);
         warpSumReductiond(sm_stjwj, threadIdx.x);
         warpSumReductiond(sm_sttjwj, threadIdx.x);
         warpSumReductiond(sm_stjwjxj, threadIdx.x);
@@ -218,60 +317,49 @@ __global__ void detrender_k1(
         __syncthreads();
 
         // pull these values out
-        double sw = sm_sw[0];
-        double swx = sm_swx[0];
-        double swy = sm_swy[0];
-        double swxx = sm_swxx[0];
-        double swxy = sm_swxy[0];
-        double swxxx = sm_swxxx[0];
-        double swxxy = sm_swxxy[0];
-        double swxxxx = sm_swxxxx[0];
-        double stjwj = sm_stjwj[0];
-        double sttjwj = sm_sttjwj[0];
-        double stjwjxj = sm_stjwjxj[0];
-        double stjwjyj = sm_stjwjyj[0];
-        double stjwjxxj = sm_stjwjxxj[0];
+        double _sw = sw[t0_num];
+        double _swx = swx[t0_num];
+        double _swy = swy[t0_num];
+        double _swxx = swxx[t0_num];
+        double _swxy = swxy[t0_num];
+        double _swxxx = swxxx[t0_num];
+        double _swxxy = swxxy[t0_num];
+        double _swxxxx = swxxxx[t0_num];
+        double _stjwj = sm_stjwj[0];
+        double _sttjwj = sm_sttjwj[0];
+        double _stjwjxj = sm_stjwjxj[0];
+        double _stjwjyj = sm_stjwjyj[0];
+        double _stjwjxxj = sm_stjwjxxj[0];
 
         /*
         B1 is the quadratic coefficient
         B2 is the linear coefficient
         B3 is the constant coefficient
-        B4 is the transit model depth (not applicable to the non-transit model)
+        B4 is the transit model depth
         i.e.
-        F_no-transit = B1*t^2 + B2*t + B3
-        F_transit    = B1*t^2 + B2*t + B3 + B4*tmodel
+        f(t) = B1*t^2 + B2*t + B3 + B4*tmodel
         */
 
         // calculate the least squares parameters for the transit model
-        double B1_tr = (stjwj*stjwj*swxx*swxxy - stjwj*stjwj*swxxx*swxy - 2*stjwj*stjwjxj*swx*swxxy + stjwj*stjwjxj*swxx*swxy + stjwj*stjwjxj*swxxx*swy + stjwj*stjwjxxj*swx*swxy - stjwj*stjwjxxj*swxx*swy + stjwj*stjwjyj*swx*swxxx - stjwj*stjwjyj*swxx*swxx + stjwjxj*stjwjxj*sw*swxxy - stjwjxj*stjwjxj*swxx*swy - stjwjxj*stjwjxxj*sw*swxy + stjwjxj*stjwjxxj*swx*swy - stjwjxj*stjwjyj*sw*swxxx + stjwjxj*stjwjyj*swx*swxx + stjwjxxj*stjwjyj*sw*swxx - stjwjxxj*stjwjyj*swx*swx - sttjwj*sw*swxx*swxxy + sttjwj*sw*swxxx*swxy + sttjwj*swx*swx*swxxy - sttjwj*swx*swxx*swxy - sttjwj*swx*swxxx*swy + sttjwj*swxx*swxx*swy)
-                        /(stjwj*stjwj*swxx*swxxxx - stjwj*stjwj*swxxx*swxxx - 2*stjwj*stjwjxj*swx*swxxxx + 2*stjwj*stjwjxj*swxx*swxxx + 2*stjwj*stjwjxxj*swx*swxxx - 2*stjwj*stjwjxxj*swxx*swxx + stjwjxj*stjwjxj*sw*swxxxx - stjwjxj*stjwjxj*swxx*swxx - 2*stjwjxj*stjwjxxj*sw*swxxx + 2*stjwjxj*stjwjxxj*swx*swxx + stjwjxxj*stjwjxxj*sw*swxx - stjwjxxj*stjwjxxj*swx*swx - sttjwj*sw*swxx*swxxxx + sttjwj*sw*swxxx*swxxx + sttjwj*swx*swx*swxxxx - 2*sttjwj*swx*swxx*swxxx + sttjwj*swxx*swxx*swxx);
-        double B2_tr = (-stjwj*stjwj*swxxx*swxxy + stjwj*stjwj*swxxxx*swxy + stjwj*stjwjxj*swxx*swxxy - stjwj*stjwjxj*swxxxx*swy + stjwj*stjwjxxj*swx*swxxy - 2*stjwj*stjwjxxj*swxx*swxy + stjwj*stjwjxxj*swxxx*swy - stjwj*stjwjyj*swx*swxxxx + stjwj*stjwjyj*swxx*swxxx - stjwjxj*stjwjxxj*sw*swxxy + stjwjxj*stjwjxxj*swxx*swy + stjwjxj*stjwjyj*sw*swxxxx - stjwjxj*stjwjyj*swxx*swxx + stjwjxxj*stjwjxxj*sw*swxy - stjwjxxj*stjwjxxj*swx*swy - stjwjxxj*stjwjyj*sw*swxxx + stjwjxxj*stjwjyj*swx*swxx + sttjwj*sw*swxxx*swxxy - sttjwj*sw*swxxxx*swxy - sttjwj*swx*swxx*swxxy + sttjwj*swx*swxxxx*swy + sttjwj*swxx*swxx*swxy - sttjwj*swxx*swxxx*swy)
-                        /(stjwj*stjwj*swxx*swxxxx - stjwj*stjwj*swxxx*swxxx - 2*stjwj*stjwjxj*swx*swxxxx + 2*stjwj*stjwjxj*swxx*swxxx + 2*stjwj*stjwjxxj*swx*swxxx - 2*stjwj*stjwjxxj*swxx*swxx + stjwjxj*stjwjxj*sw*swxxxx - stjwjxj*stjwjxj*swxx*swxx - 2*stjwjxj*stjwjxxj*sw*swxxx + 2*stjwjxj*stjwjxxj*swx*swxx + stjwjxxj*stjwjxxj*sw*swxx - stjwjxxj*stjwjxxj*swx*swx - sttjwj*sw*swxx*swxxxx + sttjwj*sw*swxxx*swxxx + sttjwj*swx*swx*swxxxx - 2*sttjwj*swx*swxx*swxxx + sttjwj*swxx*swxx*swxx);
-        double B3_tr = (stjwj*stjwjxj*swxxx*swxxy - stjwj*stjwjxj*swxxxx*swxy - stjwj*stjwjxxj*swxx*swxxy + stjwj*stjwjxxj*swxxx*swxy + stjwj*stjwjyj*swxx*swxxxx - stjwj*stjwjyj*swxxx*swxxx - stjwjxj*stjwjxj*swxx*swxxy + stjwjxj*stjwjxj*swxxxx*swy + stjwjxj*stjwjxxj*swx*swxxy + stjwjxj*stjwjxxj*swxx*swxy - 2*stjwjxj*stjwjxxj*swxxx*swy - stjwjxj*stjwjyj*swx*swxxxx + stjwjxj*stjwjyj*swxx*swxxx - stjwjxxj*stjwjxxj*swx*swxy + stjwjxxj*stjwjxxj*swxx*swy + stjwjxxj*stjwjyj*swx*swxxx - stjwjxxj*stjwjyj*swxx*swxx - sttjwj*swx*swxxx*swxxy + sttjwj*swx*swxxxx*swxy + sttjwj*swxx*swxx*swxxy - sttjwj*swxx*swxxx*swxy - sttjwj*swxx*swxxxx*swy + sttjwj*swxxx*swxxx*swy)
-                        /(stjwj*stjwj*swxx*swxxxx - stjwj*stjwj*swxxx*swxxx - 2*stjwj*stjwjxj*swx*swxxxx + 2*stjwj*stjwjxj*swxx*swxxx + 2*stjwj*stjwjxxj*swx*swxxx - 2*stjwj*stjwjxxj*swxx*swxx + stjwjxj*stjwjxj*sw*swxxxx - stjwjxj*stjwjxj*swxx*swxx - 2*stjwjxj*stjwjxxj*sw*swxxx + 2*stjwjxj*stjwjxxj*swx*swxx + stjwjxxj*stjwjxxj*sw*swxx - stjwjxxj*stjwjxxj*swx*swx - sttjwj*sw*swxx*swxxxx + sttjwj*sw*swxxx*swxxx + sttjwj*swx*swx*swxxxx - 2*sttjwj*swx*swxx*swxxx + sttjwj*swxx*swxx*swxx);
-        double B4_tr = (stjwj*swx*swxxx*swxxy - stjwj*swx*swxxxx*swxy - stjwj*swxx*swxx*swxxy + stjwj*swxx*swxxx*swxy + stjwj*swxx*swxxxx*swy - stjwj*swxxx*swxxx*swy - stjwjxj*sw*swxxx*swxxy + stjwjxj*sw*swxxxx*swxy + stjwjxj*swx*swxx*swxxy - stjwjxj*swx*swxxxx*swy - stjwjxj*swxx*swxx*swxy + stjwjxj*swxx*swxxx*swy + stjwjxxj*sw*swxx*swxxy - stjwjxxj*sw*swxxx*swxy - stjwjxxj*swx*swx*swxxy + stjwjxxj*swx*swxx*swxy + stjwjxxj*swx*swxxx*swy - stjwjxxj*swxx*swxx*swy - stjwjyj*sw*swxx*swxxxx + stjwjyj*sw*swxxx*swxxx + stjwjyj*swx*swx*swxxxx - 2*stjwjyj*swx*swxx*swxxx + stjwjyj*swxx*swxx*swxx)
-                        /(stjwj*stjwj*swxx*swxxxx - stjwj*stjwj*swxxx*swxxx - 2*stjwj*stjwjxj*swx*swxxxx + 2*stjwj*stjwjxj*swxx*swxxx + 2*stjwj*stjwjxxj*swx*swxxx - 2*stjwj*stjwjxxj*swxx*swxx + stjwjxj*stjwjxj*sw*swxxxx - stjwjxj*stjwjxj*swxx*swxx - 2*stjwjxj*stjwjxxj*sw*swxxx + 2*stjwjxj*stjwjxxj*swx*swxx + stjwjxxj*stjwjxxj*sw*swxx - stjwjxxj*stjwjxxj*swx*swx - sttjwj*sw*swxx*swxxxx + sttjwj*sw*swxxx*swxxx + sttjwj*swx*swx*swxxxx - 2*sttjwj*swx*swxx*swxxx + sttjwj*swxx*swxx*swxx);
-
-        // calculate the least squares parameters for the non transit model
-        double B1_nt = (sw*swxx*swxxy - sw*swxxx*swxy - swx*swx*swxxy + swx*swxx*swxy + swx*swxxx*swy - swxx*swxx*swy)
-                        /(sw*swxx*swxxxx - sw*swxxx*swxxx - swx*swx*swxxxx + 2*swx*swxx*swxxx - swxx*swxx*swxx);
-        double B2_nt = (-sw*swxxx*swxxy + sw*swxxxx*swxy + swx*swxx*swxxy - swx*swxxxx*swy - swxx*swxx*swxy + swxx*swxxx*swy)
-                        /(sw*swxx*swxxxx - sw*swxxx*swxxx - swx*swx*swxxxx + 2*swx*swxx*swxxx - swxx*swxx*swxx);
-        double B3_nt = (swx*swxxx*swxxy - swx*swxxxx*swxy - swxx*swxx*swxxy + swxx*swxxx*swxy + swxx*swxxxx*swy - swxxx*swxxx*swy)
-                        /(sw*swxx*swxxxx - sw*swxxx*swxxx - swx*swx*swxxxx + 2*swx*swxx*swxxx - swxx*swxx*swxx);
+        double B1 = (_stjwj*_stjwj*_swxx*_swxxy - _stjwj*_stjwj*_swxxx*_swxy - 2*_stjwj*_stjwjxj*_swx*_swxxy + _stjwj*_stjwjxj*_swxx*_swxy + _stjwj*_stjwjxj*_swxxx*_swy + _stjwj*_stjwjxxj*_swx*_swxy - _stjwj*_stjwjxxj*_swxx*_swy + _stjwj*_stjwjyj*_swx*_swxxx - _stjwj*_stjwjyj*_swxx*_swxx + _stjwjxj*_stjwjxj*_sw*_swxxy - _stjwjxj*_stjwjxj*_swxx*_swy - _stjwjxj*_stjwjxxj*_sw*_swxy + _stjwjxj*_stjwjxxj*_swx*_swy - _stjwjxj*_stjwjyj*_sw*_swxxx + _stjwjxj*_stjwjyj*_swx*_swxx + _stjwjxxj*_stjwjyj*_sw*_swxx - _stjwjxxj*_stjwjyj*_swx*_swx - _sttjwj*_sw*_swxx*_swxxy + _sttjwj*_sw*_swxxx*_swxy + _sttjwj*_swx*_swx*_swxxy - _sttjwj*_swx*_swxx*_swxy - _sttjwj*_swx*_swxxx*_swy + _sttjwj*_swxx*_swxx*_swy)
+                     /(_stjwj*_stjwj*_swxx*_swxxxx - _stjwj*_stjwj*_swxxx*_swxxx - 2*_stjwj*_stjwjxj*_swx*_swxxxx + 2*_stjwj*_stjwjxj*_swxx*_swxxx + 2*_stjwj*_stjwjxxj*_swx*_swxxx - 2*_stjwj*_stjwjxxj*_swxx*_swxx + _stjwjxj*_stjwjxj*_sw*_swxxxx - _stjwjxj*_stjwjxj*_swxx*_swxx - 2*_stjwjxj*_stjwjxxj*_sw*_swxxx + 2*_stjwjxj*_stjwjxxj*_swx*_swxx + _stjwjxxj*_stjwjxxj*_sw*_swxx - _stjwjxxj*_stjwjxxj*_swx*_swx - _sttjwj*_sw*_swxx*_swxxxx + _sttjwj*_sw*_swxxx*_swxxx + _sttjwj*_swx*_swx*_swxxxx - 2*_sttjwj*_swx*_swxx*_swxxx + _sttjwj*_swxx*_swxx*_swxx);
+        double B2 = (-_stjwj*_stjwj*_swxxx*_swxxy + _stjwj*_stjwj*_swxxxx*_swxy + _stjwj*_stjwjxj*_swxx*_swxxy - _stjwj*_stjwjxj*_swxxxx*_swy + _stjwj*_stjwjxxj*_swx*_swxxy - 2*_stjwj*_stjwjxxj*_swxx*_swxy + _stjwj*_stjwjxxj*_swxxx*_swy - _stjwj*_stjwjyj*_swx*_swxxxx + _stjwj*_stjwjyj*_swxx*_swxxx - _stjwjxj*_stjwjxxj*_sw*_swxxy + _stjwjxj*_stjwjxxj*_swxx*_swy + _stjwjxj*_stjwjyj*_sw*_swxxxx - _stjwjxj*_stjwjyj*_swxx*_swxx + _stjwjxxj*_stjwjxxj*_sw*_swxy - _stjwjxxj*_stjwjxxj*_swx*_swy - _stjwjxxj*_stjwjyj*_sw*_swxxx + _stjwjxxj*_stjwjyj*_swx*_swxx + _sttjwj*_sw*_swxxx*_swxxy - _sttjwj*_sw*_swxxxx*_swxy - _sttjwj*_swx*_swxx*_swxxy + _sttjwj*_swx*_swxxxx*_swy + _sttjwj*_swxx*_swxx*_swxy - _sttjwj*_swxx*_swxxx*_swy)
+                     /(_stjwj*_stjwj*_swxx*_swxxxx - _stjwj*_stjwj*_swxxx*_swxxx - 2*_stjwj*_stjwjxj*_swx*_swxxxx + 2*_stjwj*_stjwjxj*_swxx*_swxxx + 2*_stjwj*_stjwjxxj*_swx*_swxxx - 2*_stjwj*_stjwjxxj*_swxx*_swxx + _stjwjxj*_stjwjxj*_sw*_swxxxx - _stjwjxj*_stjwjxj*_swxx*_swxx - 2*_stjwjxj*_stjwjxxj*_sw*_swxxx + 2*_stjwjxj*_stjwjxxj*_swx*_swxx + _stjwjxxj*_stjwjxxj*_sw*_swxx - _stjwjxxj*_stjwjxxj*_swx*_swx - _sttjwj*_sw*_swxx*_swxxxx + _sttjwj*_sw*_swxxx*_swxxx + _sttjwj*_swx*_swx*_swxxxx - 2*_sttjwj*_swx*_swxx*_swxxx + _sttjwj*_swxx*_swxx*_swxx);
+        double B3 = (_stjwj*_stjwjxj*_swxxx*_swxxy - _stjwj*_stjwjxj*_swxxxx*_swxy - _stjwj*_stjwjxxj*_swxx*_swxxy + _stjwj*_stjwjxxj*_swxxx*_swxy + _stjwj*_stjwjyj*_swxx*_swxxxx - _stjwj*_stjwjyj*_swxxx*_swxxx - _stjwjxj*_stjwjxj*_swxx*_swxxy + _stjwjxj*_stjwjxj*_swxxxx*_swy + _stjwjxj*_stjwjxxj*_swx*_swxxy + _stjwjxj*_stjwjxxj*_swxx*_swxy - 2*_stjwjxj*_stjwjxxj*_swxxx*_swy - _stjwjxj*_stjwjyj*_swx*_swxxxx + _stjwjxj*_stjwjyj*_swxx*_swxxx - _stjwjxxj*_stjwjxxj*_swx*_swxy + _stjwjxxj*_stjwjxxj*_swxx*_swy + _stjwjxxj*_stjwjyj*_swx*_swxxx - _stjwjxxj*_stjwjyj*_swxx*_swxx - _sttjwj*_swx*_swxxx*_swxxy + _sttjwj*_swx*_swxxxx*_swxy + _sttjwj*_swxx*_swxx*_swxxy - _sttjwj*_swxx*_swxxx*_swxy - _sttjwj*_swxx*_swxxxx*_swy + _sttjwj*_swxxx*_swxxx*_swy)
+                     /(_stjwj*_stjwj*_swxx*_swxxxx - _stjwj*_stjwj*_swxxx*_swxxx - 2*_stjwj*_stjwjxj*_swx*_swxxxx + 2*_stjwj*_stjwjxj*_swxx*_swxxx + 2*_stjwj*_stjwjxxj*_swx*_swxxx - 2*_stjwj*_stjwjxxj*_swxx*_swxx + _stjwjxj*_stjwjxj*_sw*_swxxxx - _stjwjxj*_stjwjxj*_swxx*_swxx - 2*_stjwjxj*_stjwjxxj*_sw*_swxxx + 2*_stjwjxj*_stjwjxxj*_swx*_swxx + _stjwjxxj*_stjwjxxj*_sw*_swxx - _stjwjxxj*_stjwjxxj*_swx*_swx - _sttjwj*_sw*_swxx*_swxxxx + _sttjwj*_sw*_swxxx*_swxxx + _sttjwj*_swx*_swx*_swxxxx - 2*_sttjwj*_swx*_swxx*_swxxx + _sttjwj*_swxx*_swxx*_swxx);
+        double B4 = (_stjwj*_swx*_swxxx*_swxxy - _stjwj*_swx*_swxxxx*_swxy - _stjwj*_swxx*_swxx*_swxxy + _stjwj*_swxx*_swxxx*_swxy + _stjwj*_swxx*_swxxxx*_swy - _stjwj*_swxxx*_swxxx*_swy - _stjwjxj*_sw*_swxxx*_swxxy + _stjwjxj*_sw*_swxxxx*_swxy + _stjwjxj*_swx*_swxx*_swxxy - _stjwjxj*_swx*_swxxxx*_swy - _stjwjxj*_swxx*_swxx*_swxy + _stjwjxj*_swxx*_swxxx*_swy + _stjwjxxj*_sw*_swxx*_swxxy - _stjwjxxj*_sw*_swxxx*_swxy - _stjwjxxj*_swx*_swx*_swxxy + _stjwjxxj*_swx*_swxx*_swxy + _stjwjxxj*_swx*_swxxx*_swy - _stjwjxxj*_swxx*_swxx*_swy - _stjwjyj*_sw*_swxx*_swxxxx + _stjwjyj*_sw*_swxxx*_swxxx + _stjwjyj*_swx*_swx*_swxxxx - 2*_stjwjyj*_swx*_swxx*_swxxx + _stjwjyj*_swxx*_swxx*_swxx)
+                     /(_stjwj*_stjwj*_swxx*_swxxxx - _stjwj*_stjwj*_swxxx*_swxxx - 2*_stjwj*_stjwjxj*_swx*_swxxxx + 2*_stjwj*_stjwjxj*_swxx*_swxxx + 2*_stjwj*_stjwjxxj*_swx*_swxxx - 2*_stjwj*_stjwjxxj*_swxx*_swxx + _stjwjxj*_stjwjxj*_sw*_swxxxx - _stjwjxj*_stjwjxj*_swxx*_swxx - 2*_stjwjxj*_stjwjxxj*_sw*_swxxx + 2*_stjwjxj*_stjwjxxj*_swx*_swxx + _stjwjxxj*_stjwjxxj*_sw*_swxx - _stjwjxxj*_stjwjxxj*_swx*_swx - _sttjwj*_sw*_swxx*_swxxxx + _sttjwj*_sw*_swxxx*_swxxx + _sttjwj*_swx*_swx*_swxxxx - 2*_sttjwj*_swx*_swxx*_swxxx + _sttjwj*_swxx*_swxx*_swxx);
 
         // require some minimum depth
-        if (B4_tr < (min_depth_ppm * 1e-6)) {
-            delta_BIC[arr2d_ptr] = nanf(0);
-            ll_tr[arr2d_ptr] = nanf(0);
+        if (B4 < (min_depth_ppm * 1e-6)) {
+            ll_qtr[arr2d_ptr] = nan(0);
             continue;
         }
 
-        // now loop through the detrending window again and calculate the log-likelihood
-        for (int i = 0; i <= dtr_size; i += blockDim.x){
-            int lc_idx = dtr_frst_idx + i + threadIdx.x;
+        // now loop through the detrending window and calculate the log-likelihood
+        for (int lc_idx = (dtr_frst_idx + threadIdx.x); lc_idx <= dtr_last_idx; lc_idx += blockDim.x){
 
-            // it shouldn't be because we clipped but just in case...
+            // deal with light curve ends
             if (lc_idx < 0) continue;
             if (lc_idx >= lc_size) break;
 
@@ -279,7 +367,8 @@ __global__ void detrender_k1(
             double lc_w = (double) wght[lc_idx];
             if (lc_w == 0.0) continue;
 
-            // grab the values of time and flux to make the following code more readable (assume the compiler is smart)
+            // grab the values of time and flux to make the following code more readable
+            // (assume the compiler is smart)
             double lc_t = (double) time[lc_idx];
             double lc_f = (double) flux[lc_idx];
             // we don't want to use the absolute value of time because the floating
@@ -287,8 +376,7 @@ __global__ void detrender_k1(
             double delta_t = lc_t - t0;
 
             // compute the best fit models for this point
-            double tr_flux = B1_tr * delta_t * delta_t + B2_tr * delta_t + B3_tr;  // transit
-            double nt_flux = B1_nt * delta_t * delta_t + B2_nt * delta_t + B3_nt;  // non-transit
+            double model_flux = B1 * delta_t * delta_t + B2 * delta_t + B3;
 
             // is this point in the transit window?
             if ((lc_idx >= itr_frst_idx) & (lc_idx <= itr_last_idx)) {
@@ -298,49 +386,81 @@ __global__ void detrender_k1(
                 if ((model_idx < 0) || (model_idx >= tm_size)) continue;
                 double modval = (double) sm_tmodel[model_idx];
 
-                // incorporate the transit model where appropriate
-                tr_flux += B4_tr * modval;
+                // incorporate the transit model if appropriate
+                model_flux += B4 * modval;
             }
 
-            // accumulate the log-likelihood of the data for the two models in shared memory
-            double tr_resid = tr_flux - lc_f;
-            double nt_resid = nt_flux - lc_f;
-            double e_term = - 0.5 * log(2.0 * M_PI / lc_w);
-            sm_ll_tr[threadIdx.x] += (-0.5 * tr_resid * tr_resid * lc_w) + e_term;
-            sm_ll_nt[threadIdx.x] += (-0.5 * nt_resid * nt_resid * lc_w) + e_term;
+            // accumulate the log-likelihood of the data for the models in shared memory
+            double resid = model_flux - lc_f;
+            double e_term = -0.5 * log(2.0 * M_PI / lc_w);
+            sm_ll_tr[threadIdx.x] += (-0.5 * resid * resid * lc_w) + e_term;
         }
 
         // syncthreads needed in cases where block size > 32
         __syncthreads();
 
-        // sum reduction of the BIC arrays in shared memory
+        // sum reduction of the log-likelihood array in shared memory
         warpSumReductiond(sm_ll_tr, threadIdx.x);
-        warpSumReductiond(sm_ll_nt, threadIdx.x);
 
         // syncthreads needed in cases where block size > 32
         __syncthreads();
 
-        // compute the Bayesian information criteria
-        double BIC_tr = 5 * log(1.0 * num_pts) - 2 * sm_ll_tr[0];
-        double BIC_nt = 4 * log(1.0 * num_pts) - 2 * sm_ll_nt[0];
-        // record the BIC difference and the log-likelihood of the transit model
-        delta_BIC[arr2d_ptr] = (float) BIC_nt - BIC_tr;
-        ll_tr[arr2d_ptr] = (float) sm_ll_tr[0];
+        // record the log-likelihood of the quad+transit model
+        ll_qtr[arr2d_ptr] = (double) sm_ll_tr[0];
     }
 }
 
+// detrender - quadratic plus transit fit
+__global__ void detrender_calc_IC(
+    const double * ll_quad,  // quadratic log-likelihood array
+    const double * ll_qtr,  // quadratic+transit log-likelihood array
+    const int * num_pts,  // number of data points array
+    const int min_obs_in_window,  // the minimum acceptable number of observations in the window
+    const int IC_type,  // Type of information criterion: 0 is Bayesian, 1 is Akaike
+    const int n_durations,  // the number of durations
+    const int t0_stride_count,  // number of reference time strides
+    double * delta_IC  // the information criterion difference array (to be filled)
+){
+    // compute t0 and duration indices
+    int tid = threadIdx.x + blockIdx.x * blockDim.x;
+    int did = threadIdx.y + blockIdx.y * blockDim.y;
+    if ((tid >= t0_stride_count) || (did >= n_durations)) return;
+
+    // 2d output array pointer
+    int arr2d_ptr = tid + t0_stride_count * did;
+
+    // nullify this element if there are too few data points in the window
+    int _num_pts = num_pts[tid];
+    if (_num_pts < min_obs_in_window){
+        delta_IC[arr2d_ptr] = nan(0);
+        return;
+    }
+
+    // compute the information criteria
+    double IC_quad, IC_qtr;
+    if (IC_type == 0) {
+        // Bayesian
+        IC_qtr = 5 * log(1.0 * _num_pts) - 2 * ll_qtr[arr2d_ptr];
+        IC_quad = 4 * log(1.0 * _num_pts) - 2 * ll_quad[tid];
+    } else if (IC_type == 1) {
+        // Akaike
+        IC_qtr = 2 * 5 - 2 * ll_qtr[arr2d_ptr];
+        IC_quad = 2 * 4 - 2 * ll_quad[tid];
+    }
+    // record the BIC difference and the log-likelihood of the transit model
+    delta_IC[arr2d_ptr] = (double) (IC_quad - IC_qtr);
+}
+
 // detrender - get trend of light curve
-__global__ void detrender_k2(
+__global__ void detrender_fit_trend(
     const double * time,  // offset time array
     const double * flux,  // offset flux array
     const double * wght,  // offset flux weight array
-    const double * model,  // transits model array
+    const double * model,  // transit(s) model array
     const int kernel_half_width,  // width of the detrending kernel in samples
     const int min_obs_in_window,  // the minimum acceptable number of observations in the window
     const int lc_size,  // number of light curve elements
-    double * trend,  // the output trend array
-    int * npts  //
-
+    double * trend  // the output trend array
 ){
     // light curve element index
     const int lc_idx = threadIdx.x + blockIdx.x * blockDim.x;
@@ -362,10 +482,10 @@ __global__ void detrender_k2(
     double stjwjxxj = 0.0;
     int num_pts = 0;
 
-    const int total_width = 2 * kernel_half_width;
     // loop through the kernel window
-    for (int i = 0 ; i <= total_width; i += 1){
-        int pt_idx = lc_idx - kernel_half_width + i;
+    for (int pt_idx = (lc_idx - kernel_half_width) ;
+             pt_idx <= (lc_idx + kernel_half_width);
+             pt_idx += 1){
         if (pt_idx < 0) continue;
         if (pt_idx >= lc_size) break;
 
@@ -375,60 +495,61 @@ __global__ void detrender_k2(
 
         // grab the values of time and flux to make the following code more readable
         // (assume the compiler is smart)
-        double t = (double) time[pt_idx] - time[lc_idx];
+        double dt = (double) time[pt_idx] - time[lc_idx];
         double f = (double) flux[pt_idx];
         // also grab the transit(s) model value
         double m = (double) model[pt_idx];
 
         // accumulate various values
         sw += w;
-        swx += w * t;
+        swx += w * dt;
         swy += w * f;
-        swxx += w * t * t;
-        swxy += w * t * f;
-        swxxx += w * t * t * t;
-        swxxy += w * t * t * f;
-        swxxxx += w * t * t * t * t;
+        swxx += w * dt * dt;
+        swxy += w * dt * f;
+        swxxx += w * dt * dt * dt;
+        swxxy += w * dt * dt * f;
+        swxxxx += w * dt * dt * dt * dt;
         stjwj += w * m;
         sttjwj += w * m * m;
-        stjwjxj += w * m * t;
+        stjwjxj += w * m * dt;
         stjwjyj += w * m * f;
-        stjwjxxj += w * m * t * t;
+        stjwjxxj += w * m * dt * dt;
         num_pts += 1;
     }
 
     // skip the rest of the loop if too few observations
-    npts[lc_idx] = num_pts;
     if (num_pts < min_obs_in_window){
-        trend[lc_idx] = nanf(0);
+        trend[lc_idx] = nan(0);
         return;
     };
 
     // calculate the least squares parameters for the model
-    double B1, B2, B3;
+    // only interested in the baseline flux at the current time point (which has dT=0)
+    // i.e. we're only interested in B3, since the other 2 terms (3 if window includes
+    // a transit) are zero.
+    double B3;
     if (stjwj > 0.0){
         // contains transit, use these eqns
-        B1 = (stjwj*stjwj*swxx*swxxy - stjwj*stjwj*swxxx*swxy - 2*stjwj*stjwjxj*swx*swxxy + stjwj*stjwjxj*swxx*swxy + stjwj*stjwjxj*swxxx*swy + stjwj*stjwjxxj*swx*swxy - stjwj*stjwjxxj*swxx*swy + stjwj*stjwjyj*swx*swxxx - stjwj*stjwjyj*swxx*swxx + stjwjxj*stjwjxj*sw*swxxy - stjwjxj*stjwjxj*swxx*swy - stjwjxj*stjwjxxj*sw*swxy + stjwjxj*stjwjxxj*swx*swy - stjwjxj*stjwjyj*sw*swxxx + stjwjxj*stjwjyj*swx*swxx + stjwjxxj*stjwjyj*sw*swxx - stjwjxxj*stjwjyj*swx*swx - sttjwj*sw*swxx*swxxy + sttjwj*sw*swxxx*swxy + sttjwj*swx*swx*swxxy - sttjwj*swx*swxx*swxy - sttjwj*swx*swxxx*swy + sttjwj*swxx*swxx*swy)
-            /(stjwj*stjwj*swxx*swxxxx - stjwj*stjwj*swxxx*swxxx - 2*stjwj*stjwjxj*swx*swxxxx + 2*stjwj*stjwjxj*swxx*swxxx + 2*stjwj*stjwjxxj*swx*swxxx - 2*stjwj*stjwjxxj*swxx*swxx + stjwjxj*stjwjxj*sw*swxxxx - stjwjxj*stjwjxj*swxx*swxx - 2*stjwjxj*stjwjxxj*sw*swxxx + 2*stjwjxj*stjwjxxj*swx*swxx + stjwjxxj*stjwjxxj*sw*swxx - stjwjxxj*stjwjxxj*swx*swx - sttjwj*sw*swxx*swxxxx + sttjwj*sw*swxxx*swxxx + sttjwj*swx*swx*swxxxx - 2*sttjwj*swx*swxx*swxxx + sttjwj*swxx*swxx*swxx);
-        B2 = (-stjwj*stjwj*swxxx*swxxy + stjwj*stjwj*swxxxx*swxy + stjwj*stjwjxj*swxx*swxxy - stjwj*stjwjxj*swxxxx*swy + stjwj*stjwjxxj*swx*swxxy - 2*stjwj*stjwjxxj*swxx*swxy + stjwj*stjwjxxj*swxxx*swy - stjwj*stjwjyj*swx*swxxxx + stjwj*stjwjyj*swxx*swxxx - stjwjxj*stjwjxxj*sw*swxxy + stjwjxj*stjwjxxj*swxx*swy + stjwjxj*stjwjyj*sw*swxxxx - stjwjxj*stjwjyj*swxx*swxx + stjwjxxj*stjwjxxj*sw*swxy - stjwjxxj*stjwjxxj*swx*swy - stjwjxxj*stjwjyj*sw*swxxx + stjwjxxj*stjwjyj*swx*swxx + sttjwj*sw*swxxx*swxxy - sttjwj*sw*swxxxx*swxy - sttjwj*swx*swxx*swxxy + sttjwj*swx*swxxxx*swy + sttjwj*swxx*swxx*swxy - sttjwj*swxx*swxxx*swy)
-            /(stjwj*stjwj*swxx*swxxxx - stjwj*stjwj*swxxx*swxxx - 2*stjwj*stjwjxj*swx*swxxxx + 2*stjwj*stjwjxj*swxx*swxxx + 2*stjwj*stjwjxxj*swx*swxxx - 2*stjwj*stjwjxxj*swxx*swxx + stjwjxj*stjwjxj*sw*swxxxx - stjwjxj*stjwjxj*swxx*swxx - 2*stjwjxj*stjwjxxj*sw*swxxx + 2*stjwjxj*stjwjxxj*swx*swxx + stjwjxxj*stjwjxxj*sw*swxx - stjwjxxj*stjwjxxj*swx*swx - sttjwj*sw*swxx*swxxxx + sttjwj*sw*swxxx*swxxx + sttjwj*swx*swx*swxxxx - 2*sttjwj*swx*swxx*swxxx + sttjwj*swxx*swxx*swxx);
+        // B1 = (stjwj*stjwj*swxx*swxxy - stjwj*stjwj*swxxx*swxy - 2*stjwj*stjwjxj*swx*swxxy + stjwj*stjwjxj*swxx*swxy + stjwj*stjwjxj*swxxx*swy + stjwj*stjwjxxj*swx*swxy - stjwj*stjwjxxj*swxx*swy + stjwj*stjwjyj*swx*swxxx - stjwj*stjwjyj*swxx*swxx + stjwjxj*stjwjxj*sw*swxxy - stjwjxj*stjwjxj*swxx*swy - stjwjxj*stjwjxxj*sw*swxy + stjwjxj*stjwjxxj*swx*swy - stjwjxj*stjwjyj*sw*swxxx + stjwjxj*stjwjyj*swx*swxx + stjwjxxj*stjwjyj*sw*swxx - stjwjxxj*stjwjyj*swx*swx - sttjwj*sw*swxx*swxxy + sttjwj*sw*swxxx*swxy + sttjwj*swx*swx*swxxy - sttjwj*swx*swxx*swxy - sttjwj*swx*swxxx*swy + sttjwj*swxx*swxx*swy)
+        //     /(stjwj*stjwj*swxx*swxxxx - stjwj*stjwj*swxxx*swxxx - 2*stjwj*stjwjxj*swx*swxxxx + 2*stjwj*stjwjxj*swxx*swxxx + 2*stjwj*stjwjxxj*swx*swxxx - 2*stjwj*stjwjxxj*swxx*swxx + stjwjxj*stjwjxj*sw*swxxxx - stjwjxj*stjwjxj*swxx*swxx - 2*stjwjxj*stjwjxxj*sw*swxxx + 2*stjwjxj*stjwjxxj*swx*swxx + stjwjxxj*stjwjxxj*sw*swxx - stjwjxxj*stjwjxxj*swx*swx - sttjwj*sw*swxx*swxxxx + sttjwj*sw*swxxx*swxxx + sttjwj*swx*swx*swxxxx - 2*sttjwj*swx*swxx*swxxx + sttjwj*swxx*swxx*swxx);
+        // B2 = (-stjwj*stjwj*swxxx*swxxy + stjwj*stjwj*swxxxx*swxy + stjwj*stjwjxj*swxx*swxxy - stjwj*stjwjxj*swxxxx*swy + stjwj*stjwjxxj*swx*swxxy - 2*stjwj*stjwjxxj*swxx*swxy + stjwj*stjwjxxj*swxxx*swy - stjwj*stjwjyj*swx*swxxxx + stjwj*stjwjyj*swxx*swxxx - stjwjxj*stjwjxxj*sw*swxxy + stjwjxj*stjwjxxj*swxx*swy + stjwjxj*stjwjyj*sw*swxxxx - stjwjxj*stjwjyj*swxx*swxx + stjwjxxj*stjwjxxj*sw*swxy - stjwjxxj*stjwjxxj*swx*swy - stjwjxxj*stjwjyj*sw*swxxx + stjwjxxj*stjwjyj*swx*swxx + sttjwj*sw*swxxx*swxxy - sttjwj*sw*swxxxx*swxy - sttjwj*swx*swxx*swxxy + sttjwj*swx*swxxxx*swy + sttjwj*swxx*swxx*swxy - sttjwj*swxx*swxxx*swy)
+        //     /(stjwj*stjwj*swxx*swxxxx - stjwj*stjwj*swxxx*swxxx - 2*stjwj*stjwjxj*swx*swxxxx + 2*stjwj*stjwjxj*swxx*swxxx + 2*stjwj*stjwjxxj*swx*swxxx - 2*stjwj*stjwjxxj*swxx*swxx + stjwjxj*stjwjxj*sw*swxxxx - stjwjxj*stjwjxj*swxx*swxx - 2*stjwjxj*stjwjxxj*sw*swxxx + 2*stjwjxj*stjwjxxj*swx*swxx + stjwjxxj*stjwjxxj*sw*swxx - stjwjxxj*stjwjxxj*swx*swx - sttjwj*sw*swxx*swxxxx + sttjwj*sw*swxxx*swxxx + sttjwj*swx*swx*swxxxx - 2*sttjwj*swx*swxx*swxxx + sttjwj*swxx*swxx*swxx);
         B3 = (stjwj*stjwjxj*swxxx*swxxy - stjwj*stjwjxj*swxxxx*swxy - stjwj*stjwjxxj*swxx*swxxy + stjwj*stjwjxxj*swxxx*swxy + stjwj*stjwjyj*swxx*swxxxx - stjwj*stjwjyj*swxxx*swxxx - stjwjxj*stjwjxj*swxx*swxxy + stjwjxj*stjwjxj*swxxxx*swy + stjwjxj*stjwjxxj*swx*swxxy + stjwjxj*stjwjxxj*swxx*swxy - 2*stjwjxj*stjwjxxj*swxxx*swy - stjwjxj*stjwjyj*swx*swxxxx + stjwjxj*stjwjyj*swxx*swxxx - stjwjxxj*stjwjxxj*swx*swxy + stjwjxxj*stjwjxxj*swxx*swy + stjwjxxj*stjwjyj*swx*swxxx - stjwjxxj*stjwjyj*swxx*swxx - sttjwj*swx*swxxx*swxxy + sttjwj*swx*swxxxx*swxy + sttjwj*swxx*swxx*swxxy - sttjwj*swxx*swxxx*swxy - sttjwj*swxx*swxxxx*swy + sttjwj*swxxx*swxxx*swy)
             /(stjwj*stjwj*swxx*swxxxx - stjwj*stjwj*swxxx*swxxx - 2*stjwj*stjwjxj*swx*swxxxx + 2*stjwj*stjwjxj*swxx*swxxx + 2*stjwj*stjwjxxj*swx*swxxx - 2*stjwj*stjwjxxj*swxx*swxx + stjwjxj*stjwjxj*sw*swxxxx - stjwjxj*stjwjxj*swxx*swxx - 2*stjwjxj*stjwjxxj*sw*swxxx + 2*stjwjxj*stjwjxxj*swx*swxx + stjwjxxj*stjwjxxj*sw*swxx - stjwjxxj*stjwjxxj*swx*swx - sttjwj*sw*swxx*swxxxx + sttjwj*sw*swxxx*swxxx + sttjwj*swx*swx*swxxxx - 2*sttjwj*swx*swxx*swxxx + sttjwj*swxx*swxx*swxx);
-//         B4 = (stjwj*swx*swxxx*swxxy - stjwj*swx*swxxxx*swxy - stjwj*swxx*swxx*swxxy + stjwj*swxx*swxxx*swxy + stjwj*swxx*swxxxx*swy - stjwj*swxxx*swxxx*swy - stjwjxj*sw*swxxx*swxxy + stjwjxj*sw*swxxxx*swxy + stjwjxj*swx*swxx*swxxy - stjwjxj*swx*swxxxx*swy - stjwjxj*swxx*swxx*swxy + stjwjxj*swxx*swxxx*swy + stjwjxxj*sw*swxx*swxxy - stjwjxxj*sw*swxxx*swxy - stjwjxxj*swx*swx*swxxy + stjwjxxj*swx*swxx*swxy + stjwjxxj*swx*swxxx*swy - stjwjxxj*swxx*swxx*swy - stjwjyj*sw*swxx*swxxxx + stjwjyj*sw*swxxx*swxxx + stjwjyj*swx*swx*swxxxx - 2*stjwjyj*swx*swxx*swxxx + stjwjyj*swxx*swxx*swxx)
-//             /(stjwj*stjwj*swxx*swxxxx - stjwj*stjwj*swxxx*swxxx - 2*stjwj*stjwjxj*swx*swxxxx + 2*stjwj*stjwjxj*swxx*swxxx + 2*stjwj*stjwjxxj*swx*swxxx - 2*stjwj*stjwjxxj*swxx*swxx + stjwjxj*stjwjxj*sw*swxxxx - stjwjxj*stjwjxj*swxx*swxx - 2*stjwjxj*stjwjxxj*sw*swxxx + 2*stjwjxj*stjwjxxj*swx*swxx + stjwjxxj*stjwjxxj*sw*swxx - stjwjxxj*stjwjxxj*swx*swx - sttjwj*sw*swxx*swxxxx + sttjwj*sw*swxxx*swxxx + sttjwj*swx*swx*swxxxx - 2*sttjwj*swx*swxx*swxxx + sttjwj*swxx*swxx*swxx);
+        // B4 = (stjwj*swx*swxxx*swxxy - stjwj*swx*swxxxx*swxy - stjwj*swxx*swxx*swxxy + stjwj*swxx*swxxx*swxy + stjwj*swxx*swxxxx*swy - stjwj*swxxx*swxxx*swy - stjwjxj*sw*swxxx*swxxy + stjwjxj*sw*swxxxx*swxy + stjwjxj*swx*swxx*swxxy - stjwjxj*swx*swxxxx*swy - stjwjxj*swxx*swxx*swxy + stjwjxj*swxx*swxxx*swy + stjwjxxj*sw*swxx*swxxy - stjwjxxj*sw*swxxx*swxy - stjwjxxj*swx*swx*swxxy + stjwjxxj*swx*swxx*swxy + stjwjxxj*swx*swxxx*swy - stjwjxxj*swxx*swxx*swy - stjwjyj*sw*swxx*swxxxx + stjwjyj*sw*swxxx*swxxx + stjwjyj*swx*swx*swxxxx - 2*stjwjyj*swx*swxx*swxxx + stjwjyj*swxx*swxx*swxx)
+        //     /(stjwj*stjwj*swxx*swxxxx - stjwj*stjwj*swxxx*swxxx - 2*stjwj*stjwjxj*swx*swxxxx + 2*stjwj*stjwjxj*swxx*swxxx + 2*stjwj*stjwjxxj*swx*swxxx - 2*stjwj*stjwjxxj*swxx*swxx + stjwjxj*stjwjxj*sw*swxxxx - stjwjxj*stjwjxj*swxx*swxx - 2*stjwjxj*stjwjxxj*sw*swxxx + 2*stjwjxj*stjwjxxj*swx*swxx + stjwjxxj*stjwjxxj*sw*swxx - stjwjxxj*stjwjxxj*swx*swx - sttjwj*sw*swxx*swxxxx + sttjwj*sw*swxxx*swxxx + sttjwj*swx*swx*swxxxx - 2*sttjwj*swx*swxx*swxxx + sttjwj*swxx*swxx*swxx);
     } else {
         // no transit, use these eqns
-        B1 = (sw*swxx*swxxy - sw*swxxx*swxy - swx*swx*swxxy + swx*swxx*swxy + swx*swxxx*swy - swxx*swxx*swy)
-            /(sw*swxx*swxxxx - sw*swxxx*swxxx - swx*swx*swxxxx + 2*swx*swxx*swxxx - swxx*swxx*swxx);
-        B2 = (-sw*swxxx*swxxy + sw*swxxxx*swxy + swx*swxx*swxxy - swx*swxxxx*swy - swxx*swxx*swxy + swxx*swxxx*swy)
-            /(sw*swxx*swxxxx - sw*swxxx*swxxx - swx*swx*swxxxx + 2*swx*swxx*swxxx - swxx*swxx*swxx);
+        // B1 = (sw*swxx*swxxy - sw*swxxx*swxy - swx*swx*swxxy + swx*swxx*swxy + swx*swxxx*swy - swxx*swxx*swy)
+        //     /(sw*swxx*swxxxx - sw*swxxx*swxxx - swx*swx*swxxxx + 2*swx*swxx*swxxx - swxx*swxx*swxx);
+        // B2 = (-sw*swxxx*swxxy + sw*swxxxx*swxy + swx*swxx*swxxy - swx*swxxxx*swy - swxx*swxx*swxy + swxx*swxxx*swy)
+        //     /(sw*swxx*swxxxx - sw*swxxx*swxxx - swx*swx*swxxxx + 2*swx*swxx*swxxx - swxx*swxx*swxx);
         B3 = (swx*swxxx*swxxy - swx*swxxxx*swxy - swxx*swxx*swxxy + swxx*swxxx*swxy + swxx*swxxxx*swy - swxxx*swxxx*swy)
             /(sw*swxx*swxxxx - sw*swxxx*swxxx - swx*swx*swxxxx + 2*swx*swxx*swxxx - swxx*swxx*swxx);
     }
 
-    // determine and record the trend
-    double tt = 0.0 ; //(double) time[lc_idx];
-    trend[lc_idx] = (float) B1*tt*tt + B2*tt + B3;
+    // record the trend
+    trend[lc_idx] = B3;
 }
 
 // linear search
