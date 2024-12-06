@@ -147,8 +147,8 @@ class LightCurve(object):
         # the offset time is an array of times starting at zero,
         # it is related to the input time sequence as:
         # offset_time = input_time - reference_time
-        self.reference_time_new = self.time[0]  # todo rename to reference_time when all old uses have been expunged
-        self.offset_time = self.time - self.reference_time_new
+        self.reference_time = self.time[0]
+        self.offset_time = self.time - self.reference_time
 
         # flux errors to weights
         self.flux_weight = 1.0 / self.flux_error ** 2
@@ -262,6 +262,9 @@ cadence: {self.cadence * Constants.seconds_per_day:.0f}s"""
         self.time = np.insert(self.time, 0, _t0)
         self.flux = np.insert(self.flux, 0, _f0)
         self.flux_error = np.insert(self.flux_error, 0, _ef0)
+        if self.offset_trend is not None:
+            # prepend NaNs
+            self.offset_trend = np.insert(self.offset_trend, 0, _f0)
 
         # append
         _t1 = self.time[-1] + np.arange(1, num_points_append + 1) * self.cadence
@@ -270,11 +273,15 @@ cadence: {self.cadence * Constants.seconds_per_day:.0f}s"""
         self.time = np.append(self.time, _t1)
         self.flux = np.append(self.flux, _f1)
         self.flux_error = np.append(self.flux_error, _ef1)
+        if self.offset_trend is not None:
+            # append NaNs
+            self.offset_trend = np.append(self.offset_trend, _f1)
+
 
         # update derivative instance variables
         self.size = len(self.time)
-        self.reference_time_new = self.time[0]
-        self.offset_time = self.time - self.reference_time_new
+        self.reference_time = self.time[0]
+        self.offset_time = self.time - self.reference_time
         self.flux_weight = 1.0 / self.flux_error ** 2
         self.offset_flux = 1.0 - self.flux
         self.offset_flux_error = self.flux_error
@@ -1681,6 +1688,96 @@ def max_t14(star_radius, star_mass, period, upper_limit=0.12, small_planet=False
         result = upper_limit
 
     return result
+
+
+def concatenate_lightcurves(lc_list, resample_cadence=None):
+    """
+    Concatenate multiple LightCurve objects to produce a single LightCurve
+    object. If LightCurves overlap in time space their trends will be lost.
+    If this is the case, it's recommended that their trends are instead
+    subtracted by the user before generating a new LightCurve instance.
+
+    Parameters
+    ----------
+    lc_list : array-like
+        Array of LightCurve objects.
+    resample_cadence : float, optional
+        The cadence (in seconds) to use for resampling the light curve. By
+        default, the cadence of the first listed light curve will be used.
+
+    Returns
+    -------
+    A new LightCurve instance.
+    """
+    try:
+        if not isinstance(lc_list[0], LightCurve):
+            raise TypeError()
+    except TypeError:
+        raise TypeError("lc_list must be an array-like object containing LightCurves")
+    except IndexError:
+        raise IndexError("lc_list contains no items")
+
+    # grab the data from the combined light curve arrays
+    times = []
+    fluxes = []
+    errors = []
+    tlims = []
+    for lc in lc_list:
+        times.append(lc.input_time)
+        fluxes.append(lc.input_flux)
+        errors.append(lc.input_flux_error)
+        tlims.append((np.min(lc.input_time), np.max(lc.input_time)))
+
+    # apply the error multiplier now if present
+    for n, lc in enumerate(lc_list):
+        if lc.error_multiplier is not None:
+            errors[n] *= lc.error_multiplier
+
+    # concatenate the light curve data
+    times, fluxes, errors = map(np.concatenate, [times, fluxes, errors])
+
+    # set a resampling cadence if one isn't given
+    if resample_cadence is None:
+        resample_cadence = lc_list[0].cadence * Constants.seconds_per_day
+
+    # create a new LightCurve
+    new_lc = LightCurve(
+        times=times, fluxes=fluxes, flux_errors=errors,
+        resample_cadence=resample_cadence
+    )
+
+    # now we must migrate any previously determined trends, but only do this
+    # if they all have them
+    if np.all([lc.offset_trend is not None for lc in lc_list]):
+        # now check that the light curves don't overlap in time space
+        _overlap = False
+        for n, lim0 in enumerate(tlims[:-1]):
+            for lim1 in tlims[n+1:]:
+                if (lim1[1] >= lim0[0] >= lim1[0]
+                        or lim1[1] >= lim0[1] >= lim1[0]):
+                    _overlap = True
+
+        # raise an error if they overlap
+        if _overlap:
+            raise RuntimeError(
+                "LightCurve objects overlap, trend cannot be propagated"
+            )
+        # otherwise, carry on
+
+        # extract the trends
+        _time = []
+        _trend = []
+        for lc in lc_list:
+            _time.append(lc.time)
+            _trend.append(lc.offset_trend)
+        _time, _trend = map(np.concatenate, [_time, _trend])
+        # now do some simple linear interpolation to obtain the new trend
+        new_trend = np.interp(new_lc.time, _time, _trend, left=np.nan, right=np.nan)
+        # apply the trend to the new light curve
+        new_lc.offset_trend = new_trend
+
+    # return the new light curve
+    return new_lc
 
 
 if __name__ == "__main__":
