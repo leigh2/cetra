@@ -129,6 +129,13 @@ class LightCurve(object):
         self.input_time_start = np.min(self.input_time)
         self.input_time_end = np.max(self.input_time)
 
+        # these will be populated if we run detrending on the light curve
+        self.offset_trend = None
+        self.error_multiplier = None
+        # this will be populated if we mask transit(s) in the light curve
+        # will be an array where True is in-transit
+        self.transit_mask = None
+
         # resample the new light curve to regularise the cadence
         # a regularised cadence is necessary so that we can cheaply determine
         # the array location of a given point in time
@@ -163,10 +170,6 @@ class LightCurve(object):
             - 0.5 * np.log(2 * np.pi * self.offset_flux_error**2)
         )
 
-        # these will be populated if we run detrending on the light curve
-        self.offset_trend = None
-        self.error_multiplier = None
-
         if verbose:
             # report the input light curve information
             print(str(self))
@@ -183,6 +186,8 @@ cadence: {self.cadence * Constants.seconds_per_day:.0f}s"""
     def resample(self, new_cadence, cuda_blocksize=1024):
         """
         Resample the light curve at a new cadence.
+        (Note: Any existing transit masks will be lost, it's recommended
+        to remask again using the Transit objects.)
 
         Parameters
         ----------
@@ -200,6 +205,10 @@ cadence: {self.cadence * Constants.seconds_per_day:.0f}s"""
         # input check
         if new_cadence <= 0.0 or not np.isfinite(new_cadence):
             raise ValueError("New cadence must be finite and greater than zero")
+
+        # transit mask warning
+        if self.transit_mask is not None:
+            warnings.warn("Transit masks are removed on resampling")
 
         # generate the new time sequence
         new_times = np.arange(
@@ -245,6 +254,8 @@ cadence: {self.cadence * Constants.seconds_per_day:.0f}s"""
     def pad(self, num_points_prepend, num_points_append, verbose=True):
         """
         Pad the light curve with null data.
+        (Note: Any existing transit masks will be lost, it's recommended
+        to remask again using the Transit objects.)
 
         Parameters
         ----------
@@ -255,6 +266,10 @@ cadence: {self.cadence * Constants.seconds_per_day:.0f}s"""
         verbose : bool, optional
             If True (the default), reports various messages.
         """
+        # transit mask warning
+        if self.transit_mask is not None:
+            warnings.warn("Transit masks are removed on padding")
+
         # prepend
         _t0 = self.time[0] - np.arange(num_points_prepend, 0, -1) * self.cadence
         _f0 = np.full(num_points_prepend, np.nan, dtype=self.flux.dtype)
@@ -291,6 +306,49 @@ cadence: {self.cadence * Constants.seconds_per_day:.0f}s"""
             print(f"padded {num_points_prepend} null points to the start "
                   f"and {num_points_append} null points to the end of the "
                   f"light curve")
+
+    def mask_transit(self, transit, duration_multiplier=1.0, return_mask=False):
+        """
+        Mask a transit
+
+        Parameters
+        ----------
+        transit : Transit
+            The transit to mask (can be single or have period)
+        duration_multiplier : float, optional
+            A multiplier on the transit duration, applied to ensure that all
+            in-transit flux is removed. Default 1.0, i.e. no border.
+        return_mask : bool, optional
+            If `True`, returns the mask for this transit only. Default `False`.
+
+        Returns
+        -------
+        1D ndarray with in-transit points as `True` and out of transit as
+        `False`, if `return_mask==True`.
+        """
+        # compute the phase
+        phase = self.time - transit.t0
+        # if periodic
+        if transit.period is not None:
+            phase %= transit.period
+            phase[phase > (0.5 * transit.period)] -= transit.period
+
+        # duration to mask
+        mask_duration = transit.duration * duration_multiplier
+
+        # generate the mask
+        in_transit = np.abs(phase) < (0.5 * mask_duration)
+
+        if self.transit_mask is None:
+            # if this is a new mask, set the transit mask
+            self.transit_mask = in_transit
+        else:
+            # if this is not a new mask, update the existing
+            self.transit_mask += in_transit
+
+        # return the mask for this transit only, if requested
+        if return_mask:
+            return in_transit
 
     def copy(self):
         """
@@ -432,6 +490,24 @@ class TransitModel(object):
         m_inter = m_all[1::2]
         frac_diff = m_orig[1:] - m_inter
         return np.max(np.abs(frac_diff)), np.mean(np.abs(frac_diff))
+
+    def get_model_flux(self, times, transit):
+        """
+        Get model flux at the given time points for the given Transit object.
+
+        Parameters
+        ----------
+        times_array : array-like
+            The time points for which the model flux is sought.
+        transit : Transit
+            The Transit object for the given transit.
+
+        Returns
+        -------
+        1D ndarray of model fluxes for the given time points
+        """
+        raise NotImplementedError("do this")
+        # todo make this method
 
 
 @dataclass
@@ -1119,7 +1195,11 @@ class TransitDetector(object):
                 print(f"error multiplier (x{self.lc.error_multiplier:.3f}) available, applying")
             working_weights = self.lc.flux_weight / self.lc.error_multiplier**2
         else:
-            working_weights = self.lc.flux_weight
+            working_weights = self.lc.flux_weight.copy()
+        # apply the transit mask if available
+        if self.lc.transit_mask is not None:
+            # points in previously masked transits are given zero weight
+            working_weights[self.lc.transit_mask] = 0.0
 
         # send the relevant arrays to the gpu
         _time = to_gpu(self.lc.offset_time, np.float32)
@@ -1150,7 +1230,7 @@ class TransitDetector(object):
 
         # generate the LinearResult
         self.linear_result = LinearResult(
-            light_curve=self.lc,
+            light_curve=self.lc.copy(),
             transit_model=self.transit_model,
             duration_array=self.durations,
             t0_array=self.t0_array,
@@ -1696,6 +1776,8 @@ def concatenate_lightcurves(lc_list, resample_cadence=None):
     object. If LightCurves overlap in time space their trends will be lost.
     If this is the case, it's recommended that their trends are instead
     subtracted by the user before generating a new LightCurve instance.
+    (Note: Any existing transit masks will be lost, it's recommended to
+    remask again using the Transit objects.)
 
     Parameters
     ----------
@@ -1709,6 +1791,7 @@ def concatenate_lightcurves(lc_list, resample_cadence=None):
     -------
     A new LightCurve instance.
     """
+    # input validation
     try:
         if not isinstance(lc_list[0], LightCurve):
             raise TypeError()
@@ -1716,6 +1799,11 @@ def concatenate_lightcurves(lc_list, resample_cadence=None):
         raise TypeError("lc_list must be an array-like object containing LightCurves")
     except IndexError:
         raise IndexError("lc_list contains no items")
+
+    # transit mask warning
+    for lc in lc_list:
+        if lc.transit_mask is not None:
+            warnings.warn("Transit masks are removed on concatenation")
 
     # grab the data from the combined light curve arrays
     times = []
@@ -1771,6 +1859,9 @@ def concatenate_lightcurves(lc_list, resample_cadence=None):
             _time.append(lc.time)
             _trend.append(lc.offset_trend)
         _time, _trend = map(np.concatenate, [_time, _trend])
+        # must be in chronological order
+        _order = np.argsort(_time)
+        _time, _trend = map(lambda arr: arr[_order], [_time, _trend])
         # now do some simple linear interpolation to obtain the new trend
         new_trend = np.interp(new_lc.time, _time, _trend, left=np.nan, right=np.nan)
         # apply the trend to the new light curve
