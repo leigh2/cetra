@@ -491,23 +491,36 @@ class TransitModel(object):
         frac_diff = m_orig[1:] - m_inter
         return np.max(np.abs(frac_diff)), np.mean(np.abs(frac_diff))
 
-    def get_model_flux(self, times, transit):
+    def get_model_lc(self, times, transit):
         """
-        Get model flux at the given time points for the given Transit object.
+        Get orbital phase and model flux at the given time points for the
+        given Transit object.
 
         Parameters
         ----------
-        times_array : array-like
+        times : array-like
             The time points for which the model flux is sought.
         transit : Transit
             The Transit object for the given transit.
 
         Returns
         -------
-        1D ndarray of model fluxes for the given time points
+        Two 1D ndarrays of orbital phases and model fluxes for the given time
+        points
         """
-        raise NotImplementedError("do this")
-        # todo make this method
+        # compute the phase
+        phase = times - transit.t0
+        # if periodic
+        if transit.period is not None:
+            phase %= transit.period
+            phase[phase > (0.5 * transit.period)] -= transit.period
+
+        # compute the model flux
+        model = self.interpolator(phase / transit.duration + 0.5)
+        # set the depth
+        model = 1.0 - transit.depth * (1.0 - model)
+
+        return phase, model
 
 
 @dataclass
