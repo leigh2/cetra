@@ -485,7 +485,7 @@ class TransitModel(object):
         nearest-neighbour interpolation.
         """
         s_inter = (self.size - 1) * 2 + 1
-        _, m_all = self.interpolate(s_inter)  # todo check if should be '1 - '
+        _, m_all = self.interpolate(s_inter)
         m_orig = m_all[0::2]
         m_inter = m_all[1::2]
         frac_diff = m_orig[1:] - m_inter
@@ -813,7 +813,7 @@ class TransitDetector(object):
     ):
         """
         Obtain the trend of the light curve using a quadratic+transit model,
-        after a preliminary identification of likely transit signals.
+        after a preliminary detections of likely transit signals.
 
         Parameters
         ----------
@@ -825,6 +825,12 @@ class TransitDetector(object):
             Width of the detrending kernel in days. This might be motivated by
             some prior knowledge about the activity or rotation rate of the
             target, but should be longer than the maximum transit duration.
+            todo note that in the detrending kernel, when the locations of the
+             transits are 'known', only a single depth value is fitted within
+             a kernel width. This means transits closer together than the
+             kernel width are likely to be poorly modelled as they'll have the
+             same depth. Perhaps it's better to simply mask the detected
+             transits after all...
         IC_type : int
             The information criterion type.
             0 is Bayesian (default), 1 is Akaike.
@@ -1075,7 +1081,7 @@ class TransitDetector(object):
             _tm = 1.0 - self.transit_model.interpolator((self.lc.time - t0)/dur + 0.5)
             # check whether this transit mask overlaps an existing transit
             if not np.any(_transit_mask[_tm > 0] > 0):
-                # add this transit to the mask
+                # if not, add this transit to the mask
                 _transit_mask += _tm
             # nullify this region in the _dIC array
             _dIC[np.abs(_t0 - t0) < (0.5 * dur)] = np.nan
