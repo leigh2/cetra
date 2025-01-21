@@ -1,3 +1,26 @@
+#!/usr/bin/env python3
+
+# Copyright (c) 2024 Leigh C. Smith - lsmith@ast.cam.ac.uk
+# Exceptions are noted within their relevant locations within this file
+#
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in all
+# copies or substantial portions of the Software.
+#
+# THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+# IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+# FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+# AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+# LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+# OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+# SOFTWARE.
+
 import os
 import pycuda.autoinit
 from pycuda.compiler import SourceModule
@@ -1669,6 +1692,9 @@ def period_grid(
     Generates the optimal period grid.
     Grabbed this nice code from TLS. Thanks Hippke and Heller!
 
+    Original copyright for this code belongs to Michael Hippke, it was
+    published under an MIT license. Some modifications made by L.C. Smith.
+
     Parameters
     ----------
     epoch_baseline : float
@@ -1739,8 +1765,11 @@ def period_grid(
 def max_t14(star_radius, star_mass, period, upper_limit=0.12, small_planet=False):
     """
     Compute the maximum transit duration.
-    No need to reinvent the wheel here, thanks again Hippke and Heller!
+    No need to completely reinvent the wheel here, thanks Hippke and Heller!
     https://github.com/hippke/tls/blob/master/transitleastsquares/grid.py#L10
+
+    Original copyright for this code belongs to Michael Hippke, it was
+    published under an MIT license. Some modifications made by L.C. Smith.
 
     Parameters
     ----------
