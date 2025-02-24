@@ -26,7 +26,6 @@ import pycuda.autoinit
 from pycuda.compiler import SourceModule
 from pycuda import gpuarray
 import pycuda.driver as drv
-import matplotlib.pyplot as plt
 import numpy as np
 import warnings
 from scipy.interpolate import interp1d
