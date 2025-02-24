@@ -65,12 +65,11 @@ cd cetra
 pip install -e .
 ```
 
-[//]: # (### Running tests)
+### Running tests
 
-[//]: # ()
-[//]: # (Unit tests can be run through unittest or by navigating to the `tests` directory)
 
-[//]: # (and running `test_cetra.py` directly from the command line. )
+Unit tests can be run through unittest or by navigating to the `tests` directory
+and running `test_cetra.py` directly from the command line. 
 
 ## Basic usage
 
