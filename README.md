@@ -138,4 +138,4 @@ print(periodic_ml)
 ```
 
 ## Acknowledgements
-Leigh Smith acknowledges support from PLATO grant UKSA ST/R004838/1
+Leigh Smith acknowledges support from UKRI-STFC grants ST/X001628/1 and ST/X001571/1.
