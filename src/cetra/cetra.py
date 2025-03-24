@@ -1226,8 +1226,8 @@ class TransitDetector(object):
         # subtract the trend if available
         if self.lc.offset_trend is not None:
             if verbose:
-                print("trend available, subtracting")
-            working_flux = self.lc.offset_flux - self.lc.offset_trend
+                print("trend available, removing")
+            working_flux = 1 - (self.lc.flux / (1-self.lc.offset_trend))
         else:
             working_flux = self.lc.offset_flux
         # apply the error multiplier if available
