@@ -1157,7 +1157,8 @@ class TransitDetector(object):
         trend = _trend.get()
 
         # measure the error multiplier
-        std_resids = np.abs(self.lc.offset_flux - trend) / self.lc.offset_flux_error
+        detrended_offset_flux = 1 - (self.lc.flux / (1-trend))
+        std_resids = np.abs(detrended_offset_flux) / self.lc.offset_flux_error
         to_include = np.isfinite(std_resids) & (_transit_mask == 0.0)
         error_multiplier = np.median(std_resids[to_include]) * 1.4826
 
