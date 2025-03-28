@@ -41,8 +41,7 @@ The transit detection algorithm has three setup stages, followed by two main sta
   recorded for each period grid point, from which a periodogram can be produced and periodic 
   signals identified.
 
-A more thorough description of the algorithm can be found in the paper
-🔴insert DOI/ADS/arXiv link when published🔴.
+A more thorough description of the algorithm can be found in the paper: https://arxiv.org/abs/2503.20875.
 
 ## Installation
 
@@ -56,13 +55,17 @@ python module dependencies.
 
 ### Installation
 
-With the CUDA toolkit installed, module installation is simply a matter of cloning the 
-git repository, and installing via pip:
+With the CUDA toolkit installed, the module can be installed using pip:
+
+```shell
+pip install cetra
+```
+or alternatively by cloning the git repository, and then installing via pip:
 
 ```shell
 git clone https://github.com/leigh2/cetra.git
 cd cetra
-pip install -e .
+pip install .
 ```
 
 ### Running tests
