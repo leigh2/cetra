@@ -100,6 +100,10 @@ class LightCurve(object):
         if np.any(np.isnan(flux_errors)):
             raise ValueError("one or more flux error values is NaN")
 
+        # make sure the input time array contains no infs
+        if np.any(np.isinf(times)):
+            raise ValueError("one or more time values is infinite")
+
         # NaN fluxes are allowed - but they must have infinite error
         if np.any(np.logical_and(np.isnan(fluxes), ~np.isinf(flux_errors))):
             raise ValueError(
@@ -137,6 +141,9 @@ class LightCurve(object):
         # delta t in milliseconds
         ms_per_day = Constants.seconds_per_day * 1000
         _dt = np.round(np.diff(self.input_time * ms_per_day)).astype(np.int64)
+        # remove zero delta times, which can happen with multi-camera light curves
+        _dt = _dt[_dt>0]
+        # count the unique delta times
         uq, ct = np.unique(_dt, return_counts=True)
         if ct.max() > 1:
             # modal value if possible
@@ -165,6 +172,8 @@ class LightCurve(object):
         # infinite flux errors
         if resample_cadence is None:
             self.cadence = self.input_cadence
+            # impose a minimum 1s resample cadence - lets be sensible
+            self.cadence = max(self.cadence, 1.0 / Constants.seconds_per_day)
         else:
             self.cadence = resample_cadence / Constants.seconds_per_day
         # perform the resampling
