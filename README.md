@@ -1,6 +1,12 @@
 # Cambridge Exoplanet Transit Recovery Algorithm - CETRA
 Exoplanet transit detection within the NVIDIA CUDA GPU framework.
 
+## Change log
+* v1.01 (2025-08-29)
+  * additional input verification for input time arrays
+  * fixed potential race condition in period search CUDA kernel
+* v1.0 (2025-03-28): Initial release.
+
 ## Overview
 
 CETRA separates the transit detection task into a linear transit search followed 
