@@ -902,6 +902,9 @@ __global__ void periodic_search_k1(
     // if you were to add this to the constant model log-likelihood you
     // would obtain the joint-likelihood
 
+    // got to sync the threads here!
+    __syncthreads();
+
     // now do the block level max reduction operation, also recording the pointers
     for (int s = blockDim.x / 2; s > 0; s >>= 1){
         if (threadIdx.x < s) {
