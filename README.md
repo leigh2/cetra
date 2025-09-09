@@ -2,6 +2,8 @@
 Exoplanet transit detection within the NVIDIA CUDA GPU framework.
 
 ## Change log
+* v1.012 (2025-09-09)
+  * even more input verification for input time arrays
 * v1.01 (2025-08-29)
   * additional input verification for input time arrays
   * fixed potential race condition in period search CUDA kernel

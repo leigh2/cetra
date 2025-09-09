@@ -85,6 +85,9 @@ class LightCurve(object):
         verbose : bool, optional
             If True (the default), reports various messages.
         """
+        # make sure the input arrays are numpy arrays
+        times, fluxes, flux_errors = map(np.asarray, [times, fluxes, flux_errors])
+
         # get the number of elements
         self.input_num_points = len(times)
 
