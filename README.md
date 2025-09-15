@@ -2,7 +2,7 @@
 Exoplanet transit detection within the NVIDIA CUDA GPU framework.
 
 ## Change log
-* v1.012 (2025-09-09)
+* v1.012 (2025-09-15)
   * even more verification for input arrays
   * fix duration grid bug
 * v1.01 (2025-08-29)
