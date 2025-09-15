@@ -1503,12 +1503,12 @@ class TransitDetector(object):
         if not ignore_astrophysics:
             # set minimum and maximum durations as a fraction of the period
             duration_min = max_t14(
-                star_radius=min_star_radius, star_mass=min_star_mass,
+                star_radius=min_star_radius, star_mass=max_star_mass,
                 period=period,
                 upper_limit=max_duration_fraction, small_planet=True
             )
             duration_max = max_t14(
-                star_radius=max_star_radius, star_mass=max_star_mass,
+                star_radius=max_star_radius, star_mass=min_star_mass,
                 period=period,
                 upper_limit=max_duration_fraction, small_planet=False
             )
