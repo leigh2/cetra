@@ -12,9 +12,8 @@
 from typing import Union
 from collections import namedtuple
 import numpy as np
-from astropy import constants
 
-_G = constants.G.value  # m^3 kg^-1 s^-2
+_G = 6.67430e-11  # m**3 * kg**-1 * s**-2
 seconds_per_day = 24. * 60. * 60.  # s/day
 
 StableOrbit = namedtuple('stable_orbit', ['axis', 'ecc'])
