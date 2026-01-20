@@ -2,6 +2,12 @@
 Exoplanet transit detection within the NVIDIA CUDA GPU framework.
 
 ## Change log
+* v1.03 (2026-20-01)
+  * Implement wider duration limits for given period as per 
+  [Talens G.J., et al., 2025, RNAAS, 9, 319](https://ui.adsabs.harvard.edu/abs/2025RNAAS...9..319T). 
+  Code supplied by G.J. Talens (private communication). 
+  This improves detection sensitivity at the cost of a modest performance hit (circa 15%), because more 
+  durations are being tested for a given period. 
 * v1.02 (2025-09-15)
   * even more verification for input arrays
   * fix duration grid bug

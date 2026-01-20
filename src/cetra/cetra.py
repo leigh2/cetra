@@ -33,6 +33,7 @@ from copy import deepcopy
 from time import time
 from dataclasses import dataclass
 from tqdm.auto import tqdm
+from .gjt_durations import get_transit_duration_limits
 
 
 class Constants(object):
@@ -1302,6 +1303,7 @@ class TransitDetector(object):
             ignore_astrophysics=False, max_duration_fraction=0.12,
             min_star_mass=0.1, max_star_mass=1.0,
             min_star_radius=0.13, max_star_radius=3.5,
+            circular_orbits=True,
             random_order=True, verbose=True
     ):
         """
@@ -1342,15 +1344,23 @@ class TransitDetector(object):
             is also required to be astrophysically plausible (the default
             behaviour).
         max_duration_fraction : float, optional
-            Maximum duration as a fraction of the period, default 0.12.
+            Maximum allowable duration as a fraction of the period,
+            default 0.12.
         min_star_mass : float, optional
-            Minimum star mass to consider in solar masses, default 0.1.
+            Minimum star mass to consider when determining duration
+            limits for a given period. Units of solar masses, default 0.1.
         max_star_mass : float, optional
-            Maximum star mass to consider in solar masses, default 1.0.
+            Maximum star mass to consider when determining duration
+            limits for a given period. Units of solar masses, default 1.0.
         min_star_radius : float, optional
-            Minimum star radius to consider in solar radii, default 0.13.
+            Minimum star radius to consider when determining duration
+            limits for a given period. Units of solar radii, default 0.13.
         max_star_radius : float, optional
-            Maximum star radius to consider in solar radii, default 3.5.
+            Maximum star radius to consider when determining duration
+            limits for a given period. Units of solar radii, default 3.5.
+        circular_orbits : bool, optional
+            If True, considers only circular orbits when determining duration
+            limits (default True).
         random_order : bool, optional
             If True (the default), the period grid is shuffled before
             computation. This provides a more accurate estimated compute time
@@ -1396,6 +1406,23 @@ class TransitDetector(object):
             warnings.warn("The period grid is empty")
             return
 
+        # determine the duration limits for the period grid
+        if not ignore_astrophysics:
+            # set minimum and maximum durations as per the gjt prescription
+            duration_limits, _, _ = get_transit_duration_limits(
+                self.periods,
+                density_bounds=(1.41 * min_star_mass * max_star_radius ** -3,
+                                1.41 * max_star_mass * min_star_radius ** -3),
+                stellar_radius_bounds=(max_star_radius, min_star_radius),
+                circular_orbits=circular_orbits
+            )
+            min_durations = duration_limits.short
+            max_durations = duration_limits.long
+        else:
+            # no minimum duration, max set by user
+            min_durations = np.zeros_like(self.periods)
+            max_durations = max_duration_fraction * self.periods
+
         # initialise a dictionary to record the results in
         periodogram = {
             'like_ratio': np.full(self.period_count, np.nan, dtype=np.float32),
@@ -1423,14 +1450,11 @@ class TransitDetector(object):
         for i in tqdm(range(self.period_count), total=self.period_count, disable=not verbose):
             n = order[i]
             period = float(self.periods[n])
+            min_duration = min_durations[n]
+            max_duration = max_durations[n]
 
             # check this period
-            ret = self.check_period(
-                period, ignore_astrophysics=ignore_astrophysics,
-                max_duration_fraction=max_duration_fraction,
-                min_star_mass=min_star_mass, max_star_mass=max_star_mass,
-                min_star_radius=min_star_radius, max_star_radius=max_star_radius
-            )
+            ret = self.check_period(period, min_duration, max_duration)
 
             # record the results
             periodogram['like_ratio'][n] = ret[0]
@@ -1461,13 +1485,7 @@ class TransitDetector(object):
 
         return self.periodic_result
 
-    def check_period(
-            self, period,
-            max_duration_fraction=0.12,
-            min_star_mass=0.1, max_star_mass=1.0,
-            min_star_radius=0.13, max_star_radius=3.5,
-            ignore_astrophysics=False
-    ):
+    def check_period(self, period, min_duration, max_duration):
         """
         Find the maximum likelihood ratio (vs. constant flux model), depth,
         depth variance, number of data points, t0 and duration for a given
@@ -1477,21 +1495,12 @@ class TransitDetector(object):
         ----------
         period : float
             The period to check
-        max_duration_fraction : float, optional
-            Maximum duration as a fraction of the period, default 0.12.
-        min_star_mass : float, optional
-            Minimum star mass to consider in solar masses, default 0.1.
-        max_star_mass : float, optional
-            Maximum star mass to consider in solar masses, default 1.0.
-        min_star_radius : float, optional
-            Minimum star radius to consider in solar radii, default 0.13.
-        max_star_radius : float, optional
-            Maximum star radius to consider in solar radii, default 3.5.
-        ignore_astrophysics : bool, optional
-            If `True`, the duration is only required to be less than the
-            period times the max_duration_fraction. If `False`, the duration
-            is also required to be astrophysically plausible (the default
-            behaviour).
+        min_duration : float
+            Minimum duration to check.
+        max_duration : float, optional
+            Maximum duration to check. Must be less than the period or
+            results are invalid, CETRA will warn and set it to the
+            period when necessary.
 
         Returns
         -------
@@ -1500,36 +1509,15 @@ class TransitDetector(object):
         t0 index and duration index for the input period.
         """
 
-        if not ignore_astrophysics:
-            # set minimum and maximum durations as a fraction of the period
-            duration_min = max_t14(
-                star_radius=min_star_radius, star_mass=max_star_mass,
-                period=period,
-                upper_limit=max_duration_fraction, small_planet=True
-            )
-            duration_max = max_t14(
-                star_radius=max_star_radius, star_mass=min_star_mass,
-                period=period,
-                upper_limit=max_duration_fraction, small_planet=False
-            )
-            # convert to time units
-            duration_min *= period
-            duration_max *= period
-
-        else:
-            # no minimum duration, max set by user
-            duration_min = 0.0
-            duration_max = max_duration_fraction * period
-
         # the duration should always be less than the period, so that transit
         # windows can never overlap
-        if duration_max > period:
+        if max_duration > period:
             warnings.warn("the max duration should not be larger than the period")
-            duration_max = period
+            max_duration = period
 
         # which durations to run
         _idx_durations_in_range = np.where(
-            (self.durations >= duration_min) & (self.durations <= duration_max)
+            (self.durations >= min_duration) & (self.durations <= max_duration)
         )[0]
         num_d_in_range = np.int32(_idx_durations_in_range.size)
 
@@ -1772,62 +1760,6 @@ def period_grid(
     P_x = np.sort(P_x)
 
     return P_x
-
-
-def max_t14(star_radius, star_mass, period, upper_limit=0.12, small_planet=False):
-    """
-    Compute the maximum transit duration.
-    No need to completely reinvent the wheel here, thanks Hippke and Heller!
-    https://github.com/hippke/tls/blob/master/transitleastsquares/grid.py#L10
-
-    Original copyright for this code belongs to Michael Hippke, it was
-    published under an MIT license. Some modifications made by L.C. Smith.
-
-    Parameters
-    ----------
-    star_radius : float
-        Stellar radius in units of solar radii
-    star_mass : float
-        Stellar mass in units of solar masses
-    period : float
-        Period in units of days
-    upper_limit : float, optional
-        Maximum transit duration as a fraction of period (default 0.12)
-    small_planet : bool, optional
-        If True, uses the small planet assumption (i.e. the planet radius relative
-        to the stellar radius is negligible). Otherwise, uses a 2* Jupiter radius
-        planet (the default).
-
-    Returns
-    -------
-    duration: float
-        Maximum transit duration as a fraction of the period
-    """
-    # unit conversions
-    period = period * Constants.seconds_per_day
-    star_radius = Constants.solar_radius * star_radius
-    star_mass = Constants.solar_mass * star_mass
-
-    if small_planet:
-        # small planet assumption
-        radius = star_radius
-    else:
-        # planet size 2 R_jup
-        radius = star_radius + 2 * Constants.jupiter_radius
-
-    # pi * G * mass
-    piGM = np.pi * Constants.G * star_mass
-    # transit duration
-    T14max = radius * (4 * period / piGM) ** (1 / 3)
-
-    # convert to fractional
-    result = T14max / period
-
-    # impose upper limit
-    if result > upper_limit:
-        result = upper_limit
-
-    return result
 
 
 def concatenate_lightcurves(lc_list, resample_cadence=None):
