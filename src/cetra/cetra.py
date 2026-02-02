@@ -831,6 +831,8 @@ class TransitDetector(object):
 
         # initialise instance variables that get populated later
         self.periods = None
+        self.min_durations = None
+        self.max_durations = None
         self.period_count = None
         self.like_ratio_2d_gpu = None
         self.depth_2d_gpu = None
@@ -1416,12 +1418,12 @@ class TransitDetector(object):
                 stellar_radius_bounds=(max_star_radius, min_star_radius),
                 circular_orbits=circular_orbits
             )
-            min_durations = duration_limits.short
-            max_durations = duration_limits.long
+            self.min_durations = duration_limits.short
+            self.max_durations = duration_limits.long
         else:
             # no minimum duration, max set by user
-            min_durations = np.zeros_like(self.periods)
-            max_durations = max_duration_fraction * self.periods
+            self.min_durations = np.zeros_like(self.periods)
+            self.max_durations = max_duration_fraction * self.periods
 
         # initialise a dictionary to record the results in
         periodogram = {
@@ -1450,8 +1452,8 @@ class TransitDetector(object):
         for i in tqdm(range(self.period_count), total=self.period_count, disable=not verbose):
             n = order[i]
             period = float(self.periods[n])
-            min_duration = min_durations[n]
-            max_duration = max_durations[n]
+            min_duration = self.min_durations[n]
+            max_duration = self.max_durations[n]
 
             # check this period
             ret = self.check_period(period, min_duration, max_duration)

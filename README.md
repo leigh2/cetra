@@ -2,6 +2,8 @@
 Exoplanet transit detection within the NVIDIA CUDA GPU framework.
 
 ## Change log
+* v1.04 (####-##-##)
+  * Min and max durations as a function of period are now stored as TransitDetector attributes after period search.
 * v1.03 (2026-20-01)
   * Implement wider duration limits for given period as per 
   [Talens G.J., et al., 2025, RNAAS, 9, 319](https://ui.adsabs.harvard.edu/abs/2025RNAAS...9..319T). 
