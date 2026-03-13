@@ -399,7 +399,7 @@ __global__ void detrender_qtrfit(
             double model_flux = B1 * delta_t * delta_t + B2 * delta_t + B3;
 
             // is this point in the transit window?
-            if ((lc_idx >= itr_frst_idx) & (lc_idx <= itr_last_idx)) {
+            if ((lc_idx >= itr_frst_idx) && (lc_idx <= itr_last_idx)) {
                 // find the nearest model point index
                 int model_idx = lrintf(( lc_t - ts ) / duration * tm_size);
                 // just in case we're out of bounds:
@@ -953,7 +953,7 @@ __global__ void periodic_search_k2(
 
     // cycle through the likelihood ratio input array
     // record the max and index in shared mem
-    for (int i = 0 ; i <= in_arr_len ; i += blockDim.x){
+    for (int i = 0 ; i < in_arr_len ; i += blockDim.x){
         int idx = i + threadIdx.x;
         if (idx >= in_arr_len) break;
         if (   (isnan(sm_lr[threadIdx.x]))
