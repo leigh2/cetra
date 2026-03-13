@@ -23,31 +23,55 @@
 // open the shared memory array
 extern __shared__ char sm[];
 
-__device__ void warpSumReductionf(volatile float* sdata, int tid) {
-    //sdata[tid] += sdata[tid + 32];
-    sdata[tid] += sdata[tid + 16];
-    sdata[tid] += sdata[tid + 8];
-    sdata[tid] += sdata[tid + 4];
-    sdata[tid] += sdata[tid + 2];
-    sdata[tid] += sdata[tid + 1];
+__inline__ __device__
+void warpSumReductionf(float* sdata, int tid)
+{
+    // Load thread-local value into a register
+    float v = sdata[tid];
+
+    // Perform warp-level reduction
+    unsigned mask = 0xffffffff;
+    v += __shfl_down_sync(mask, v, 16);
+    v += __shfl_down_sync(mask, v, 8);
+    v += __shfl_down_sync(mask, v, 4);
+    v += __shfl_down_sync(mask, v, 2);
+    v += __shfl_down_sync(mask, v, 1);
+
+    // Write only lane 0’s result back
+    if ((tid & 31) == 0)
+        sdata[tid] = v;
 }
 
-__device__ void warpSumReductiond(volatile double* sdata, int tid) {
-    //sdata[tid] += sdata[tid + 32];
-    sdata[tid] += sdata[tid + 16];
-    sdata[tid] += sdata[tid + 8];
-    sdata[tid] += sdata[tid + 4];
-    sdata[tid] += sdata[tid + 2];
-    sdata[tid] += sdata[tid + 1];
+__inline__ __device__
+void warpSumReductiond(double* sdata, int tid)
+{
+    double v = sdata[tid];
+
+    unsigned mask = 0xffffffff;
+    v += __shfl_down_sync(mask, v, 16);
+    v += __shfl_down_sync(mask, v, 8);
+    v += __shfl_down_sync(mask, v, 4);
+    v += __shfl_down_sync(mask, v, 2);
+    v += __shfl_down_sync(mask, v, 1);
+
+    if ((tid & 31) == 0)
+        sdata[tid] = v;
 }
 
-__device__ void warpSumReductioni(volatile int* sdata, int tid) {
-    //sdata[tid] += sdata[tid + 32];
-    sdata[tid] += sdata[tid + 16];
-    sdata[tid] += sdata[tid + 8];
-    sdata[tid] += sdata[tid + 4];
-    sdata[tid] += sdata[tid + 2];
-    sdata[tid] += sdata[tid + 1];
+__inline__ __device__
+void warpSumReductioni(int* sdata, int tid)
+{
+    int v = sdata[tid];
+
+    unsigned mask = 0xffffffff;
+    v += __shfl_down_sync(mask, v, 16);
+    v += __shfl_down_sync(mask, v, 8);
+    v += __shfl_down_sync(mask, v, 4);
+    v += __shfl_down_sync(mask, v, 2);
+    v += __shfl_down_sync(mask, v, 1);
+
+    if ((tid & 31) == 0)
+        sdata[tid] = v;
 }
 
 // detrender - quadratic-only fit
