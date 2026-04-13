@@ -33,6 +33,7 @@ from copy import deepcopy
 from time import time
 from dataclasses import dataclass
 from tqdm.auto import tqdm
+import inspect
 from .gjt_durations import get_transit_duration_limits
 
 
@@ -569,6 +570,16 @@ class Transit(object):
     depth_error: float
     period: float = None
 
+    def __repr__(self):
+        return (f"Transit(\n"
+                f"    t0={self.t0:.3f}\n"
+                f"    duration={self.duration:.3f}\n"
+                f"    depth={self.depth:.3e}\n"
+                f"    depth_error={self.depth_error:.3e}\n"
+                f"    period={self.period}\n"
+                f"    SNR={self.depth / self.depth_error:.2f}\n"
+                f")")
+
 
 @dataclass
 class LinearResult(object):
@@ -582,6 +593,7 @@ class LinearResult(object):
     like_ratio_array: np.ndarray
     depth_array: np.ndarray
     depth_variance_array: np.ndarray
+    transit_detector: TransitDetector
 
     def get_max_likelihood_parameters(self):
         """
@@ -615,6 +627,69 @@ class LinearResult(object):
             snr_array = np.abs(snr_array)
         d, t = np.unravel_index(np.nanargmax(snr_array), snr_array.shape)
         return self.get_params(d, t)
+
+    def get_transits_above_snr_threshold(
+            self,
+            snr_threshold,
+            duration_multiplier=1.3,
+            max_transits=200,
+            absolute_depth=False
+    ):
+        """
+        Return the parameters of TCEs with SNR above a given threshold.
+        May miss transits that overlap with more significant ones.
+
+        Parameters
+        ----------
+        snr_threshold : float
+            The SNR threshold above which to return TCEs.
+        duration_multiplier : float, optional
+            The multiplier on the transit duration to use when masking out
+            transits.
+        max_transits : int, optional
+            The maximum number of transits to return. This is to prevent the method from running
+            indefinitely if the SNR threshold is set too low. Default is 200.
+        absolute_depth : bool, optional
+            If `True`, computes SNR as |S/N|, otherwise SNR is S/N.
+            `False` by default.
+
+        Returns
+        -------
+        A list of Transit objects for transits with SNR above the given
+        threshold.
+        """
+        # take copies of the TransitDetector and this LinearResult so we can
+        # manipulate them without affecting the originals
+        _transit_detector = deepcopy(self.transit_detector)
+        _linear_result = deepcopy(self)
+
+        # break out the snr array
+        snr_array = _linear_result.depth_array / np.sqrt(_linear_result.depth_variance_array)
+        if absolute_depth:
+            snr_array = np.abs(snr_array)
+
+        # somewhere to store the transits that we find
+        transits = []
+
+        # run the search
+        while np.nanmax(snr_array) > snr_threshold and len(transits) < max_transits:
+            # nullify areas in the likelihood array where the snr is below the threshold
+            lr_valid = np.where(snr_array >= snr_threshold, _linear_result.like_ratio_array, np.nan)
+            # identify the monotransit with the maximum likelihood ratio
+            dtidx = np.unravel_index(np.nanargmax(lr_valid), lr_valid.shape)
+            tr = _linear_result.get_params(*dtidx)
+            # dump the transit in the list with the others
+            transits.append(tr)
+            # mask the transit in the light curve
+            _transit_detector.lc.mask_transit(tr, duration_multiplier=duration_multiplier)
+            # rerun the linear search with the masked light curve
+            _linear_result = _transit_detector.linear_search(verbose=False)
+            # break out the snr array again
+            snr_array = _linear_result.depth_array / np.sqrt(_linear_result.depth_variance_array)
+            if absolute_depth:
+                snr_array = np.abs(snr_array)
+
+        return transits
 
     def get_params(self, duration_index: int, t0_index: int):
         """
@@ -658,6 +733,7 @@ class PeriodicResult(object):
     depth_variance_array: np.ndarray
     duration_index_array: np.ndarray
     t0_index_array: np.ndarray
+    transit_detector: TransitDetector
 
     def __post_init__(self):
         """
@@ -700,6 +776,97 @@ class PeriodicResult(object):
             snr_array = np.abs(snr_array)
         idx = np.nanargmax(snr_array)
         return self.get_params(idx)
+
+    def get_transits_above_snr_threshold(
+            self,
+            snr_threshold,
+            duration_multiplier=1.3,
+            max_transits=10,
+            absolute_depth=False
+    ):
+        """
+        Return the parameters of TCEs with SNR above a given threshold.
+        May miss transits that overlap with more significant ones.
+
+        Parameters
+        ----------
+        snr_threshold : float
+            The SNR threshold above which to return TCEs.
+        duration_multiplier : float, optional
+            The multiplier on the transit duration to use when masking out
+            transits.
+        max_transits : int, optional
+            The maximum number of transits to return. This is to prevent the method from running
+            indefinitely if the SNR threshold is set too low. Default is 10.
+        absolute_depth : bool, optional
+            If `True`, computes SNR as |S/N|, otherwise SNR is S/N.
+            `False` by default.
+
+        Returns
+        -------
+        A list of Transit objects for transits with SNR above the given
+        threshold.
+        """
+        # take copies of the TransitDetector and this PeriodicResult so we can
+        # manipulate them without affecting the originals
+        _transit_detector = deepcopy(self.transit_detector)
+        _periodic_result = deepcopy(self)
+
+        # break out the snr array
+        snr_array = _periodic_result.depth_array / np.sqrt(_periodic_result.depth_variance_array)
+        if absolute_depth:
+            snr_array = np.abs(snr_array)
+
+        # somewhere to store the transits that we find
+        transits = []
+
+        # identify the periods that meet the threshold
+        idx_meets_threshold = np.where(snr_array > snr_threshold)[0]
+        # reorder by descending likelihood ratio
+        idx_meets_threshold = idx_meets_threshold[
+            np.argsort(- _periodic_result.like_ratio_array[idx_meets_threshold])
+        ]
+
+        # check each signal
+        for idx in idx_meets_threshold:
+            # grab the period
+            period = _periodic_result.period_array[idx]
+            min_duration = _transit_detector.min_durations[idx]
+            max_duration = _transit_detector.max_durations[idx]
+            # recheck the period
+            # not strictly necessary on the first loop but its cheap and avoids a conditional
+            ret = _transit_detector.check_period(period, min_duration, max_duration)
+            # break out the returned values
+            _like_ratio, _depth, _var_depth, _t0_idx, _dur_idx = ret
+
+            # if the likelihood ratio is unchanged, this is probably a new TCE
+            new_TCE = _like_ratio == _periodic_result.like_ratio_array[idx]
+
+            # update the PeriodResult object
+            _periodic_result.like_ratio_array[idx] = _like_ratio
+            _periodic_result.depth_array[idx] = _depth
+            _periodic_result.depth_variance_array[idx] = _var_depth
+            _periodic_result.duration_index_array[idx] = _dur_idx
+            _periodic_result.t0_index_array[idx] = _t0_idx
+
+            # record the new TCE
+            if new_TCE:
+                # grab the corresponding transit object
+                tr = _periodic_result.get_params(idx)
+                # dump it in the list with the others
+                transits.append(tr)
+
+                # mask the detected transit in the light curve
+                _transit_detector.lc.mask_transit(tr, duration_multiplier=duration_multiplier)
+                # rerun the linear search with the masked light curve
+                _ = _transit_detector.linear_search(verbose=False)
+
+            # stop if we've reached the max number of TCEs
+            if len(transits) == max_transits:
+                break
+
+        return transits
+
 
     def get_params(self, period_index: int):
         """
@@ -1108,7 +1275,7 @@ class TransitDetector(object):
         _dur = self.durations[idx[0][~allnan]]
         _dIC = np.take_along_axis(_delta_IC, idx, axis=0)[0][~allnan]
 
-        # now work from the most to least likely transit, populating the
+        # now work from the most to the least likely transit, populating the
         # transit mask array
         while np.any(np.isfinite(_dIC)):
             max_dIC_idx = np.nanargmax(_dIC)
@@ -1209,6 +1376,8 @@ class TransitDetector(object):
         -------
         LinearResult
         """
+        args_dict = locals()
+
         if verbose:
             print("commencing linear search")
 
@@ -1293,7 +1462,8 @@ class TransitDetector(object):
             t0_array=self.t0_array,
             like_ratio_array=self.like_ratio_2d_gpu.get(),
             depth_array=self.depth_2d_gpu.get(),
-            depth_variance_array=self.var_depth_2d_gpu.get()
+            depth_variance_array=self.var_depth_2d_gpu.get(),
+            transit_detector=self,
         )
 
         return self.linear_result
@@ -1377,6 +1547,8 @@ class TransitDetector(object):
         -------
         PeriodicResult
         """
+        args_dict = locals()
+
         if self.linear_result is None:
             warnings.warn(
                 "A periodic signal search cannot be run without first running "
@@ -1482,7 +1654,8 @@ class TransitDetector(object):
             depth_array=periodogram['depth'],
             depth_variance_array=periodogram['var_depth'],
             duration_index_array=periodogram['duration_idx'],
-            t0_index_array=periodogram['t0_idx']
+            t0_index_array=periodogram['t0_idx'],
+            transit_detector=self,
         )
 
         return self.periodic_result
