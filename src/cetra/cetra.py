@@ -1909,9 +1909,9 @@ class TransitDetector(object):
     def get_periodic_transits_above_snr_threshold(
             self,
             snr_threshold,
-            duration_multiplier = 1.3,
-            max_transits = 10,
-            absolute_depth = False
+            duration_multiplier=1.3,
+            max_transits=10,
+            absolute_depth=False
     ):
         """
         Return the parameters of periodic transits with SNR above a given threshold.
