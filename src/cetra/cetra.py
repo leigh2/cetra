@@ -55,7 +55,7 @@ _detrender_calc_IC = None
 _detrender_fit_trend = None
 
 
-def _ensure_kernels():
+def _ensure_kernels() -> None:
     global _cu_src
     global _resample_kernel_1, _resample_kernel_2
     global _linear_search_kernel, _periodic_search_k1, _periodic_search_k2
@@ -81,7 +81,8 @@ class LightCurve(object):
     """
     A light curve
     """
-    def __init__(self, times, fluxes, flux_errors, resample_cadence=None, verbose=True):
+    def __init__(self, times: np.ndarray, fluxes: np.ndarray, flux_errors: np.ndarray,
+                 resample_cadence: float | None = None, verbose: bool = True) -> None:
         """
         Basic light curve validation and class instance initialisation.
 
@@ -231,7 +232,8 @@ constant flux model log-likelihood: {self.flat_loglike:.3e}
 resampled light curve has {self.size} elements, \
 cadence: {self.cadence * Constants.seconds_per_day:.0f}s"""
 
-    def resample(self, new_cadence, cuda_blocksize=1024):
+    def resample(self, new_cadence: float, cuda_blocksize: int = 1024
+                 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Resample the light curve at a new cadence.
         (Note: Any existing transit masks will be lost, it's recommended
@@ -301,7 +303,7 @@ cadence: {self.cadence * Constants.seconds_per_day:.0f}s"""
 
         return new_times, _rflux_out.get(), _err_out.get()
 
-    def pad(self, num_points_prepend, num_points_append, verbose=True):
+    def pad(self, num_points_prepend: int, num_points_append: int, verbose: bool = True) -> None:
         """
         Pad the light curve with null data.
         (Note: Any existing transit masks will be lost, it's recommended
@@ -357,7 +359,8 @@ cadence: {self.cadence * Constants.seconds_per_day:.0f}s"""
                   f"and {num_points_append} null points to the end of the "
                   f"light curve")
 
-    def mask_transit(self, transit, duration_multiplier=1.0, return_mask=False):
+    def mask_transit(self, transit: 'Transit', duration_multiplier: float = 1.0,
+                     return_mask: bool = False) -> np.ndarray | None:
         """
         Mask a transit
 
@@ -400,7 +403,7 @@ cadence: {self.cadence * Constants.seconds_per_day:.0f}s"""
         if return_mask:
             return in_transit
 
-    def copy(self):
+    def copy(self) -> 'LightCurve':
         """
         Return a copy of this LightCurve instance
 
@@ -410,12 +413,16 @@ cadence: {self.cadence * Constants.seconds_per_day:.0f}s"""
         """
         return deepcopy(self)
 
+    def __copy__(self) -> 'LightCurve':
+        return self.copy()
+
 
 class TransitModel(object):
     """
     A transit model
     """
-    def __init__(self, transit_model, downsamples=1024, verbose=True):
+    def __init__(self, transit_model: np.ndarray | str, downsamples: int = 1024,
+                 verbose: bool = True) -> None:
         """
         Initialise the TransitModel class
 
@@ -510,7 +517,7 @@ class TransitModel(object):
             print(f"maximum nearest-neighbour error: {100 * _nn_error[0]:.2e}%")
             print(f"   mean nearest-neighbour error: {100 * _nn_error[1]:.2e}%")
 
-    def copy(self):
+    def copy(self) -> 'TransitModel':
         """
         Return a copy of this TransitModel instance
 
@@ -523,7 +530,8 @@ class TransitModel(object):
     def __copy__(self):
         return self.copy()
 
-    def interpolate(self, samples, kind='linear'):
+    def interpolate(self, samples: int, kind: str = 'linear'
+                    ) -> tuple[interp1d, np.ndarray]:
         """
         Resample an input model using interpolation
 
@@ -537,8 +545,7 @@ class TransitModel(object):
 
         Returns
         -------
-        Model with the required number of samples,
-        and the interpolator object
+        The interpolator object and the model with the required number of samples
         """
         i1d = interp1d(
             np.linspace(0, 1, len(self.input_model)), self.input_model,
@@ -547,7 +554,7 @@ class TransitModel(object):
         )
         return i1d, i1d(np.linspace(0, 1, samples))
 
-    def nn_error(self):
+    def nn_error(self) -> tuple[float, float]:
         """
         Return the maximum and mean error in the model due to the use of
         nearest-neighbour interpolation.
@@ -559,7 +566,8 @@ class TransitModel(object):
         frac_diff = m_orig[1:] - m_inter
         return np.max(np.abs(frac_diff)), np.mean(np.abs(frac_diff))
 
-    def get_model_lc(self, times, transit):
+    def get_model_lc(self, times: np.ndarray, transit: 'Transit'
+                     ) -> tuple[np.ndarray, np.ndarray]:
         """
         Get orbital phase and model flux at the given time points for the
         given Transit object.
@@ -612,7 +620,7 @@ class Transit(object):
                 f"    SNR={self.depth / self.depth_error:.2f}\n"
                 f")")
 
-    def copy(self):
+    def copy(self) -> 'Transit':
         """
         Return a copy of this Transit instance
 
@@ -639,7 +647,7 @@ class LinearResult(object):
     depth_array: np.ndarray
     depth_variance_array: np.ndarray
 
-    def copy(self):
+    def copy(self) -> 'LinearResult':
         """
         Return a copy of this LinearResult instance
 
@@ -705,7 +713,7 @@ class LinearResult(object):
         d, t = np.unravel_index(np.nanargmax(snr_array), snr_array.shape)
         return self.get_params(d, t)
 
-    def get_params(self, duration_index: int, t0_index: int):
+    def get_params(self, duration_index: int, t0_index: int) -> Transit:
         """
         Find the parameters of a TCE given duration and t0 indices
 
@@ -748,7 +756,7 @@ class PeriodicResult(object):
     duration_index_array: np.ndarray
     t0_index_array: np.ndarray
 
-    def copy(self):
+    def copy(self) -> 'PeriodicResult':
         """
         Return a copy of this PeriodicResult instance
 
@@ -823,7 +831,7 @@ class PeriodicResult(object):
         idx = np.nanargmax(snr_array)
         return self.get_params(idx)
 
-    def get_params(self, period_index: int):
+    def get_params(self, period_index: int) -> Transit:
         """
         Find the parameters of a TCE given a period index
 
@@ -866,10 +874,11 @@ class TransitDetector(object):
     """
 
     def __init__(
-            self, light_curve, transit_model=None, durations=None,
-            min_duration=0.02, max_duration=1.0, duration_log_step=1.1,
-            t0_stride_fraction=0.01, verbose=True
-    ):
+            self, light_curve: LightCurve, transit_model: TransitModel | None = None,
+            durations: np.ndarray | None = None, min_duration: float = 0.02,
+            max_duration: float = 1.0, duration_log_step: float = 1.1,
+            t0_stride_fraction: float = 0.01, verbose: bool = True
+    ) -> None:
         """
         Initialise the transit detector.
 
@@ -1316,7 +1325,7 @@ class TransitDetector(object):
             return (num_pts.get(), ll_quad.get(), ll_qtr.get(),
                     delta_IC.get(), _transit_mask, trend, error_multiplier)
 
-    def linear_search(self, n_warps=4096, verbose=True):
+    def linear_search(self, n_warps: int = 4096, verbose: bool = True) -> LinearResult:
         """
         Perform a grid search in t0 and duration for transit-like signals
         in the light curve.
@@ -1433,15 +1442,15 @@ class TransitDetector(object):
         return self.linear_result
 
     def period_search(
-            self, periods=None,
-            min_period=0.0, max_period=np.inf, n_transits_min=2,
-            pgrid_R_star=1.0, pgrid_M_star=1.0, pgrid_oversample=3,
-            ignore_astrophysics=False, max_duration_fraction=0.12,
-            min_star_mass=0.1, max_star_mass=1.0,
-            min_star_radius=0.13, max_star_radius=3.5,
-            circular_orbits=True,
-            random_order=True, verbose=True
-    ):
+            self, periods: np.ndarray | None = None,
+            min_period: float = 0.0, max_period: float = np.inf, n_transits_min: int = 2,
+            pgrid_R_star: float = 1.0, pgrid_M_star: float = 1.0, pgrid_oversample: int = 3,
+            ignore_astrophysics: bool = False, max_duration_fraction: float = 0.12,
+            min_star_mass: float = 0.1, max_star_mass: float = 1.0,
+            min_star_radius: float = 0.13, max_star_radius: float = 3.5,
+            circular_orbits: bool = True,
+            random_order: bool = True, verbose: bool = True
+    ) -> PeriodicResult | None:
         """
         Run a search for periodic signals within a LinearResult.
 
@@ -1621,11 +1630,11 @@ class TransitDetector(object):
 
         return self.periodic_result
 
-    def check_period(self, period, min_duration, max_duration):
+    def check_period(self, period: float, min_duration: float, max_duration: float
+                     ) -> tuple[float, float, float, int, int]:
         """
         Find the maximum likelihood ratio (vs. constant flux model), depth,
-        depth variance, number of data points, t0 and duration for a given
-        period.
+        depth variance, t0 and duration for a given period.
 
         Parameters
         ----------
@@ -1640,9 +1649,9 @@ class TransitDetector(object):
 
         Returns
         -------
-        Tuple of len=6 containing the maximum likelihood ratio and the
-        corresponding depth, depth variance, number of data points,
-        t0 index and duration index for the input period.
+        Tuple of len=5 containing the maximum likelihood ratio and the
+        corresponding depth, depth variance, t0 index and duration index
+        for the input period.
         """
 
         # the duration should always be less than the period, so that transit
@@ -1742,7 +1751,7 @@ class TransitDetector(object):
 
         return lrat_out, depth_out, vdepth_out, t0_idx_out, dur_idx_out
 
-    def get_max_likelihood_single_transit(self):
+    def get_max_likelihood_single_transit(self) -> Transit | None:
         """
         Return the parameters of the maximum likelihood single transit event in the
         light curve, using the results of the linear search.
@@ -1766,7 +1775,7 @@ class TransitDetector(object):
 
         return self.linear_result.get_params(d, t)
 
-    def get_max_snr_single_transit(self, absolute_depth=False):
+    def get_max_snr_single_transit(self, absolute_depth: bool = False) -> Transit | None:
         """
         Return the parameters of the maximum SNR single transit event in the
         light curve, using the results of the linear search.
@@ -1800,11 +1809,11 @@ class TransitDetector(object):
 
     def get_single_transits_above_snr_threshold(
             self,
-            snr_threshold,
-            duration_multiplier=1.3,
-            max_transits=200,
-            absolute_depth=False
-    ):
+            snr_threshold: float,
+            duration_multiplier: float = 1.3,
+            max_transits: int = 200,
+            absolute_depth: bool = False
+    ) -> list[Transit] | None:
         """
         Return the parameters of single transits with SNR above a given threshold.
         May miss transits that overlap with more significant ones.
@@ -1872,7 +1881,7 @@ class TransitDetector(object):
 
         return transits
 
-    def get_max_likelihood_periodic_transit(self):
+    def get_max_likelihood_periodic_transit(self) -> Transit | None:
         """
         Return the parameters of the maximum likelihood periodic transit event in the
         light curve, using the results of the period search.
@@ -1893,7 +1902,7 @@ class TransitDetector(object):
 
         return self.periodic_result.get_params(idx)
 
-    def get_max_snr_periodic_transit(self, absolute_depth=False):
+    def get_max_snr_periodic_transit(self, absolute_depth: bool = False) -> Transit | None:
         """
         Return the parameters of the maximum SNR periodic transit event in the
         light curve, using the results of the period search.
@@ -1927,11 +1936,11 @@ class TransitDetector(object):
 
     def get_periodic_transits_above_snr_threshold(
             self,
-            snr_threshold,
-            duration_multiplier=1.3,
-            max_transits=10,
-            absolute_depth=False
-    ):
+            snr_threshold: float,
+            duration_multiplier: float = 1.3,
+            max_transits: int = 10,
+            absolute_depth: bool = False
+    ) -> list[Transit] | None:
         """
         Return the parameters of periodic transits with SNR above a given threshold.
         May miss transits that overlap with more significant ones.
@@ -2026,7 +2035,7 @@ class TransitDetector(object):
         return transits
 
 
-def to_gpu(arr, dtype: np.dtype):
+def to_gpu(arr: np.ndarray, dtype: np.dtype) -> gpuarray.GPUArray:
     """
     Convenience function for sending an array to the gpu with a specific data
     type.
@@ -2046,12 +2055,12 @@ def to_gpu(arr, dtype: np.dtype):
 
 
 def duration_grid(
-        durations=None,
-        min_duration=0.02,
-        max_duration=1.0,
-        log_step=1.1,
-        verbose=True
-):
+        durations: np.ndarray | None = None,
+        min_duration: float = 0.02,
+        max_duration: float = 1.0,
+        log_step: float = 1.1,
+        verbose: bool = True
+) -> np.ndarray:
     """
     Validate or generate the duration grid
 
@@ -2104,9 +2113,14 @@ def duration_grid(
 
 
 def period_grid(
-        epoch_baseline, min_period=0.0, max_period=np.inf,
-        n_transits_min=2, R_star=1.0, M_star=1.0, oversampling_factor=3
-):
+        epoch_baseline: float,
+        min_period: float = 0.0,
+        max_period: float = np.inf,
+        n_transits_min: int = 2,
+        R_star: float = 1.0,
+        M_star: float = 1.0,
+        oversampling_factor: int = 3
+) -> np.ndarray:
     """
     Generates the optimal period grid.
     Grabbed this nice code from TLS. Thanks Hippke and Heller!
@@ -2181,7 +2195,10 @@ def period_grid(
     return P_x
 
 
-def concatenate_lightcurves(lc_list, resample_cadence=None):
+def concatenate_lightcurves(
+        lc_list: list[LightCurve],
+        resample_cadence: float | None = None
+) -> LightCurve:
     """
     Concatenate multiple LightCurve objects to produce a single LightCurve
     object. If LightCurves overlap in time space their trends will be lost.
