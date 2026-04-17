@@ -22,6 +22,7 @@
 # SOFTWARE.
 
 import os
+from __future__ import annotations
 import pycuda.autoinit
 from pycuda.compiler import SourceModule
 from pycuda import gpuarray
