@@ -611,13 +611,17 @@ class Transit(object):
     period: float = None
 
     def __repr__(self):
+        if self.period is not None:
+            repr_period = f"{self.period:.6f}"
+        else:
+            repr_period = "None"
         return (f"Transit(\n"
-                f"    t0={self.t0:.3f}\n"
-                f"    duration={self.duration:.3f}\n"
-                f"    depth={self.depth:.3e}\n"
-                f"    depth_error={self.depth_error:.3e}\n"
-                f"    period={self.period}\n"
-                f"    SNR={self.depth / self.depth_error:.2f}\n"
+                f"    t0 = {self.t0:.3f}\n"
+                f"    duration = {self.duration:.3f}\n"
+                f"    depth = {self.depth:.3e}\n"
+                f"    depth_error = {self.depth_error:.3e}\n"
+                f"    period = {repr_period}\n"
+                f"    SNR = {self.depth / self.depth_error:.2f}\n"
                 f")")
 
     def copy(self) -> 'Transit':
