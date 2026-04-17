@@ -22,7 +22,6 @@
 # SOFTWARE.
 
 import os
-import pycuda.autoinit
 from pycuda.compiler import SourceModule
 from pycuda import gpuarray
 import pycuda.driver as drv
@@ -44,24 +43,38 @@ class Constants(object):
     jupiter_radius = 7.1492e+7  # m, IAU, equatorial
 
 
-# read the cuda source code
-cu_src_file_path = os.path.join(os.path.dirname(__file__), "cetra.cu")
-with open(cu_src_file_path, "r") as cu_src_file:
-    cu_src = SourceModule(cu_src_file.read())
+_cu_src = None
+_resample_kernel_1 = None
+_resample_kernel_2 = None
+_linear_search_kernel = None
+_periodic_search_k1 = None
+_periodic_search_k2 = None
+_detrender_quadfit = None
+_detrender_qtrfit = None
+_detrender_calc_IC = None
+_detrender_fit_trend = None
 
-# extract the kernels
-# light curve resampling kernels
-_resample_kernel_1 = cu_src.get_function("resample_k1")
-_resample_kernel_2 = cu_src.get_function("resample_k2")
-# transit search kernels
-_linear_search_kernel = cu_src.get_function("linear_search")
-_periodic_search_k1 = cu_src.get_function("periodic_search_k1")
-_periodic_search_k2 = cu_src.get_function("periodic_search_k2")
-# detrending kernels
-_detrender_quadfit = cu_src.get_function("detrender_quadfit")
-_detrender_qtrfit = cu_src.get_function("detrender_qtrfit")
-_detrender_calc_IC = cu_src.get_function("detrender_calc_IC")
-_detrender_fit_trend = cu_src.get_function("detrender_fit_trend")
+
+def _ensure_kernels():
+    global _cu_src
+    global _resample_kernel_1, _resample_kernel_2
+    global _linear_search_kernel, _periodic_search_k1, _periodic_search_k2
+    global _detrender_quadfit, _detrender_qtrfit, _detrender_calc_IC, _detrender_fit_trend
+    if _cu_src is not None:
+        return
+    import pycuda.autoinit
+    cu_src_file_path = os.path.join(os.path.dirname(__file__), "cetra.cu")
+    with open(cu_src_file_path, "r") as cu_src_file:
+        _cu_src = SourceModule(cu_src_file.read())
+    _resample_kernel_1 = _cu_src.get_function("resample_k1")
+    _resample_kernel_2 = _cu_src.get_function("resample_k2")
+    _linear_search_kernel = _cu_src.get_function("linear_search")
+    _periodic_search_k1 = _cu_src.get_function("periodic_search_k1")
+    _periodic_search_k2 = _cu_src.get_function("periodic_search_k2")
+    _detrender_quadfit = _cu_src.get_function("detrender_quadfit")
+    _detrender_qtrfit = _cu_src.get_function("detrender_qtrfit")
+    _detrender_calc_IC = _cu_src.get_function("detrender_calc_IC")
+    _detrender_fit_trend = _cu_src.get_function("detrender_fit_trend")
 
 
 class LightCurve(object):
@@ -237,6 +250,8 @@ cadence: {self.cadence * Constants.seconds_per_day:.0f}s"""
         -------
         A LightCurve instance with the new sampling cadence
         """
+        _ensure_kernels()
+
         # input check
         if new_cadence <= 0.0 or not np.isfinite(new_cadence):
             raise ValueError("New cadence must be finite and greater than zero")
@@ -478,6 +493,8 @@ class TransitModel(object):
         self.interpolator, self.model = self.interpolate(downsamples)
         # store the transit model size as an instance variable
         self.size = int(downsamples)
+
+        _ensure_kernels()
 
         # to save a lot of 1-f transit model operations later, lets do it now
         self.offset_model = 1.0 - self.model
@@ -902,6 +919,8 @@ class TransitDetector(object):
             log_step=duration_log_step,
             verbose=verbose
         )
+        _ensure_kernels()
+
         # how many durations are there?
         self.duration_count = len(self.durations)
         # send the durations to the gpu
