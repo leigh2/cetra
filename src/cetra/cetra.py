@@ -21,8 +21,8 @@
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 # SOFTWARE.
 
-import os
 from __future__ import annotations
+import os
 import pycuda.autoinit
 from pycuda.compiler import SourceModule
 from pycuda import gpuarray
