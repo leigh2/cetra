@@ -5,7 +5,9 @@ Exoplanet transit detection within the NVIDIA CUDA GPU framework.
 * v1.04 (####-##-##)
   * Min and max durations as a function of period are now stored as TransitDetector attributes after period search.
   * Nicer \_\_repr\_\_ for the Transit class.
-  * Added methods for the LinearResult and PeriodicResult classes to obtain signals above a given SNR threshold. This won't always be _ALL_ signals, it may fail to detect overlapping signals, so some looping may still be necessary. An example notebook has been added for demonstration.
+  * Deprecation warning for get_*_parameters methods of the LinearResult and PeriodicResult classes, in favour of replacements in the TransitDetector class. The former will be removed in a future release.
+  * Deprecation warning for the TransitDetector.get_trend() method. I am stopping support for detrending within CETRA. There are many good alternatives available (see e.g. the [wotan](https://github.com/hippke/wotan) package). This method will be removed in a future release.
+  * Added methods to the TransitDetector class to obtain multiple single or periodic signals above a given SNR threshold. This won't always be _ALL_ signals, it may fail to detect overlapping signals, so some looping might still be necessary. An example notebook has been added for demonstration.
 * v1.03 (2026-20-01)
   * Implement wider duration limits for given period as per 
   [Talens G.J., et al., 2025, RNAAS, 9, 319](https://ui.adsabs.harvard.edu/abs/2025RNAAS...9..319T). 
@@ -123,11 +125,11 @@ The linear search can then be run with:
 ```python
 linear_result = transit_detector.linear_search()
 ```
-`linear_result` is a `cetra.LinearResult` instance, and can be probed for single transits.
-For example, the maximum likelihood single transit can be obtained as a `cetra.Transit` instance
-with the method:
+`linear_result` is a `cetra.LinearResult` instance. The TransitDetector class has methods to probe the 
+linear search results for the maximum likelihood or maximum SNR single transit.
+For example, the maximum likelihood single transit can be obtained as a `cetra.Transit` instance with:
 ```python
-monotransit_ml = linear_result.get_max_likelihood_parameters()
+monotransit_ml = transit_detector.get_max_likelihood_single_transit()
 print(monotransit_ml)
 
 # Transit(
@@ -138,16 +140,20 @@ print(monotransit_ml)
 #         period=None
 #        )
 ```
+The equivalent method for the maximum SNR signal is `.get_max_snr_single_transit()`. 
+Non-overlapping single transits above a given SNR threshold can be obtained with the
+`.get_single_transits_above_snr_threshold(snr_threshold)` method, which returns a python list of `Transit` objects.
 
 The periodic signal search can then be run over the default period grid specification with:
 ```python
 periodic_result = transit_detector.period_search()
 ```
 The user is free to specify or supply an alternative period grid at this stage. `periodic_result`
-is a `cetra.PeriodicResult` instance and can be probed for periodic signals. For example, the 
-maximum likelihood signal, as a `cetra.Transit` instance, can be obtained with the method:
+is a `cetra.PeriodicResult` instance. The TransitDetector class has methods to probe the 
+periodic search results for the maximum likelihood or maximum SNR periodic transit.
+For example, the maximum likelihood signal, as a `cetra.Transit` instance, can be obtained with:
 ```python
-periodic_ml = periodic_result.get_max_likelihood_parameters()
+periodic_ml = transit_detector.get_max_likelihood_periodic_transit()
 print(periodic_ml)
 
 # Transit(
@@ -158,6 +164,9 @@ print(periodic_ml)
 #         period=4.465103568398068
 #        )
 ```
+The equivalent method for the maximum SNR signal is `.get_max_snr_periodic_transit()`. 
+Non-overlapping periodic transits above a given SNR threshold can be obtained with the
+`.get_periodic_transits_above_snr_threshold(snr_threshold)` method, which returns a python list of `Transit` objects.
 
 ## Acknowledgements
 Leigh Smith acknowledges support from UKRI-STFC grants ST/X001628/1 and ST/X001571/1.

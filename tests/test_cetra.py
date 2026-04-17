@@ -57,7 +57,7 @@ class TransitDetectorTestCase(unittest.TestCase):
         # run the linear search
         mtr = tced.linear_search(verbose=True)
         # extract the max-likelihood transit parameters
-        transit = mtr.get_max_likelihood_parameters()
+        transit = tced.get_max_likelihood_single_transit()
 
         # verify that at least one of the real transits was found, find which one
         t0s = np.arange(self.test_data["t0"], np.max(self.test_data["times"]), self.test_data["period"])
@@ -91,7 +91,7 @@ class TransitDetectorTestCase(unittest.TestCase):
         # run the periodic search
         ptr = tced.period_search(verbose=True)
         # extract the max-likelihood transit parameters
-        transit = ptr.get_max_likelihood_parameters()
+        transit = tced.get_max_likelihood_periodic_transit()
 
         # check that the period is the best it could have found in the grid
         idx_best_true_per = np.argmin(np.abs(tced.periods - self.test_data["period"]))
