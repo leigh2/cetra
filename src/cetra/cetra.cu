@@ -241,6 +241,7 @@ __global__ void detrender_qtrfit(
         if (sm_idx >= tm_size) break;
         sm_tmodel[sm_idx] = tmodel[sm_idx];
     }
+    __syncthreads();
 
     // duration index
     const int dur_id = blockIdx.y;
@@ -600,6 +601,7 @@ __global__ void linear_search(
         if (sm_idx >= tm_size) break;
         sm_tmodel[sm_idx] = tmodel[sm_idx];
     }
+    __syncthreads();
 
     // duration index
     const int dur_id = blockIdx.y;
