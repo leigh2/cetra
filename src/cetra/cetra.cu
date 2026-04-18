@@ -41,14 +41,6 @@ __device__ void warpSumReductiond(volatile double* sdata, int tid) {
     sdata[tid] += sdata[tid + 1];
 }
 
-__device__ void warpSumReductioni(volatile int* sdata, int tid) {
-    //sdata[tid] += sdata[tid + 32];
-    sdata[tid] += sdata[tid + 16];
-    sdata[tid] += sdata[tid + 8];
-    sdata[tid] += sdata[tid + 4];
-    sdata[tid] += sdata[tid + 2];
-    sdata[tid] += sdata[tid + 1];
-}
 
 // detrender - quadratic-only fit
 __global__ void detrender_quadfit(
@@ -467,6 +459,9 @@ __global__ void detrender_calc_IC(
         // Akaike
         IC_qtr = 2 * 5 - 2 * ll_qtr[arr2d_ptr];
         IC_quad = 2 * 4 - 2 * ll_quad[tid];
+    } else {
+        delta_IC[arr2d_ptr] = nan(0);
+        return;
     }
     // record the BIC difference and the log-likelihood of the transit model
     delta_IC[arr2d_ptr] = (double) (IC_quad - IC_qtr);
@@ -636,8 +631,8 @@ __global__ void linear_search(
         __syncthreads();
 
         // compute the index of the first and last in-transit points
-        int itr_frst_idx = lrintf(ceilf(ts / cadence)) ;
-        int itr_last_idx = lrintf(floorf((ts+duration) / cadence));
+        int itr_frst_idx = lrintf(floorf(ts / cadence));
+        int itr_last_idx = lrintf(ceilf((ts+duration) / cadence));
         // clip first indices to start of light curve
         itr_frst_idx = max(itr_frst_idx, 0);
         // clip last index to end of light curve
@@ -646,7 +641,7 @@ __global__ void linear_search(
         int itr_size = itr_last_idx - itr_frst_idx + 1;
 
         // loop over the light curve in the transit window
-        for (int i = 0; i <= itr_size; i += blockDim.x){
+        for (int i = 0; i < itr_size; i += blockDim.x){
             int lc_idx = itr_frst_idx + i + threadIdx.x;
 
             // it shouldn't be because we clipped but just in case...
@@ -700,7 +695,7 @@ __global__ void linear_search(
         __syncthreads();
 
         // now loop through the transit window again and calculate the log-likelihood
-        for (int i = 0; i <= itr_size; i += blockDim.x){
+        for (int i = 0; i < itr_size; i += blockDim.x){
             int lc_idx = itr_frst_idx + i + threadIdx.x;
 
             // it shouldn't be because we clipped but just in case...
