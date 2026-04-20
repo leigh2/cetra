@@ -8,6 +8,7 @@ Exoplanet transit detection within the NVIDIA CUDA GPU framework.
   * Deprecation warning for get_*_parameters methods of the LinearResult and PeriodicResult classes, in favour of replacements in the TransitDetector class. The former will be removed in a future release.
   * Deprecation warning for the TransitDetector.get_trend() method. I am stopping support for detrending within CETRA. There are many good alternatives available (see e.g. the [wotan](https://github.com/hippke/wotan) package). This method will be removed in a future release.
   * Added methods to the TransitDetector class to obtain multiple single or periodic signals above a given SNR threshold. This won't always be _ALL_ signals, it may fail to detect overlapping signals, so some looping might still be necessary. An example notebook has been added for demonstration.
+  * Added documentation, available on ReadTheDocs.
 * v1.03 (2026-01-20)
   * Implement wider duration limits for given period as per 
   [Talens G.J., et al., 2025, RNAAS, 9, 319](https://ui.adsabs.harvard.edu/abs/2025RNAAS...9..319T). 
@@ -21,6 +22,10 @@ Exoplanet transit detection within the NVIDIA CUDA GPU framework.
   * additional input verification for input time arrays
   * fixed potential race condition in period search CUDA kernel
 * v1.0 (2025-03-28): Initial release.
+
+## Documentation
+
+Available at [cetra.readthedocs.io](https://cetra.readthedocs.io/en/latest/).
 
 ## Overview
 
