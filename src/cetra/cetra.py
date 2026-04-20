@@ -441,11 +441,8 @@ class TransitModel(object):
             Alternatively, one of the strings 'b32', 'b93' or 'b99' can be
             supplied. In this case, a model with impact parameter 0.32,
             0.93 or 0.99, respectively, will be used. All other parameters
-            are:
-                'rp': 0.03,
-                'u': (0.4804, 0.1867),
-                'period': 10.0,
-                'semimajor_axis': 20.0.
+            are: ``{'rp': 0.03, 'u': (0.4804, 0.1867), 'period': 10.0,
+            'semimajor_axis': 20.0}``.
         downsamples : int, optional
             Downsample the transit model to this number of samples for use by
             the GPU kernels. Ideally a power of 2. It's best to be
@@ -698,7 +695,7 @@ class LinearResult(object):
         Parameters
         ----------
         absolute_depth : bool, optional
-            If `True`, computes SNR as |S/N|, otherwise SNR is S/N.
+            If `True`, computes SNR as abs(S/N), otherwise SNR is S/N.
             `False` by default.
 
         Returns
@@ -816,7 +813,7 @@ class PeriodicResult(object):
         Parameters
         ----------
         absolute_depth : bool, optional
-            If `True`, computes SNR as |S/N|, otherwise SNR is S/N.
+            If `True`, computes SNR as abs(S/N), otherwise SNR is S/N.
             `False` by default.
 
         Returns
@@ -893,11 +890,8 @@ class TransitDetector(object):
         transit_model : TransitModel, optional
             This TransitModel will be used, if provided, instead of the default.
             The default model is for a transit with the following parameters:
-                'rp': 0.03,
-                'b': 0.32,
-                'u': (0.4804, 0.1867),
-                'period': 10.0,
-                'semimajor_axis': 20.0.
+            ``{'rp': 0.03, 'b': 0.32, 'u': (0.4804, 0.1867), 'period': 10.0,
+            'semimajor_axis': 20.0}``.
         durations : array-like, optional
             User-specified grid of durations in days. If not provided, the
             module computes a grid using the minimum and maximum durations
@@ -988,7 +982,7 @@ class TransitDetector(object):
     ):
         """
         Obtain the trend of the light curve using a quadratic+transit model,
-        after a preliminary detections of likely transit signals.
+        after a preliminary detection of likely transit signals.
 
         Parameters
         ----------
@@ -1000,12 +994,12 @@ class TransitDetector(object):
             Width of the detrending kernel in days. This might be motivated by
             some prior knowledge about the activity or rotation rate of the
             target, but should be longer than the maximum transit duration.
-            todo note that in the detrending kernel, when the locations of the
-             transits are 'known', only a single depth value is fitted within
-             a kernel width. This means transits closer together than the
-             kernel width are likely to be poorly modelled as they'll have the
-             same depth. Perhaps it's better to simply mask the detected
-             transits after all...
+            Note: in the detrending kernel, when the locations of the
+            transits are 'known', only a single depth value is fitted within
+            a kernel width. This means transits closer together than the
+            kernel width are likely to be poorly modelled as they'll have the
+            same depth. Perhaps it's better to simply mask the detected
+            transits after all...
         IC_type : int
             The information criterion type.
             0 is Bayesian (default), 1 is Akaike.
@@ -1787,7 +1781,7 @@ class TransitDetector(object):
         Parameters
         ----------
         absolute_depth : bool, optional
-            If `True`, computes SNR as |S/N|, otherwise SNR is S/N.
+            If `True`, computes SNR as abs(S/N), otherwise SNR is S/N.
             `False` by default.
 
         Returns
@@ -1833,7 +1827,7 @@ class TransitDetector(object):
             The maximum number of transits to return. This is to prevent the method from running
             indefinitely if the SNR threshold is set too low. Default is 200.
         absolute_depth : bool, optional
-            If `True`, computes SNR as |S/N|, otherwise SNR is S/N.
+            If `True`, computes SNR as abs(S/N), otherwise SNR is S/N.
             `False` by default.
 
         Returns
@@ -1914,7 +1908,7 @@ class TransitDetector(object):
         Parameters
         ----------
         absolute_depth : bool, optional
-            If `True`, computes SNR as |S/N|, otherwise SNR is S/N.
+            If `True`, computes SNR as abs(S/N), otherwise SNR is S/N.
             `False` by default.
 
         Returns
@@ -1960,7 +1954,7 @@ class TransitDetector(object):
             The maximum number of transits to return. This is to prevent the method from running
             indefinitely if the SNR threshold is set too low. Default is 10.
         absolute_depth : bool, optional
-            If `True`, computes SNR as |S/N|, otherwise SNR is S/N.
+            If `True`, computes SNR as abs(S/N), otherwise SNR is S/N.
             `False` by default.
 
         Returns
