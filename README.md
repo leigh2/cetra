@@ -2,7 +2,7 @@
 Exoplanet transit detection within the NVIDIA CUDA GPU framework.
 
 ## Change log
-* v1.04 (####-##-##)
+* v1.04 (2026-04-20)
   * Min and max durations as a function of period are now stored as TransitDetector attributes after period search.
   * Nicer \_\_repr\_\_ for the Transit class.
   * Deprecation warning for get_*_parameters methods of the LinearResult and PeriodicResult classes, in favour of replacements in the TransitDetector class. The former will be removed in a future release.
