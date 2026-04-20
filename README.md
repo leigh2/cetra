@@ -8,7 +8,7 @@ Exoplanet transit detection within the NVIDIA CUDA GPU framework.
   * Deprecation warning for get_*_parameters methods of the LinearResult and PeriodicResult classes, in favour of replacements in the TransitDetector class. The former will be removed in a future release.
   * Deprecation warning for the TransitDetector.get_trend() method. I am stopping support for detrending within CETRA. There are many good alternatives available (see e.g. the [wotan](https://github.com/hippke/wotan) package). This method will be removed in a future release.
   * Added methods to the TransitDetector class to obtain multiple single or periodic signals above a given SNR threshold. This won't always be _ALL_ signals, it may fail to detect overlapping signals, so some looping might still be necessary. An example notebook has been added for demonstration.
-* v1.03 (2026-20-01)
+* v1.03 (2026-01-20)
   * Implement wider duration limits for given period as per 
   [Talens G.J., et al., 2025, RNAAS, 9, 319](https://ui.adsabs.harvard.edu/abs/2025RNAAS...9..319T). 
   Code supplied by G.J. Talens (private communication). 
@@ -34,7 +34,8 @@ monotransits). CETRA is designed to be run on detrended light curves.
 
 The transit detection algorithm has three setup stages, followed by two main stages:
 
-* * The first setup step resamples the input light curve such that the cadence
+* Setup:
+  * The first setup step resamples the input light curve such that the cadence
     is regularised and data gaps are eliminated. New data points with no contributing 
     observations are null, with infinite uncertainty. This resampling means the 
     light curve point roughly corresponding to any point in time can be determined 
@@ -62,7 +63,7 @@ The transit detection algorithm has three setup stages, followed by two main sta
   recorded for each period grid point, from which a periodogram can be produced and periodic 
   signals identified.
 
-A more thorough description of the algorithm can be found in the paper: https://arxiv.org/abs/2503.20875.
+A more thorough description of the algorithm can be found in the paper [Smith et al., 2025, MNRAS, 539, 297](https://ui.adsabs.harvard.edu/abs/2025MNRAS.539..297S).
 
 ## Installation
 
@@ -90,7 +91,6 @@ pip install .
 ```
 
 ### Running tests
-
 
 Unit tests can be run through unittest or by navigating to the `tests` directory
 and running `test_cetra.py` directly from the command line. 
