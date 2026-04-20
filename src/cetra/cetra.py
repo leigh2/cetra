@@ -79,7 +79,47 @@ def _ensure_kernels() -> None:
 
 class LightCurve(object):
     """
-    A light curve
+    A stellar light curve, resampled to a regular cadence via GPU.
+
+    On construction the input data are validated, sorted chronologically,
+    and resampled onto a uniform time grid using a GPU kernel
+    (``resample_k1`` / ``resample_k2``).  Gaps in coverage are filled with
+    null points (``flux = NaN``, ``flux_error = inf``) so that any point in
+    time can be located by simple index arithmetic.
+
+    Attributes
+    ----------
+    time : ndarray
+        Resampled time array in days.
+    flux : ndarray
+        Resampled flux array (relative to baseline).
+    flux_error : ndarray
+        Resampled flux error array.
+    cadence : float
+        Cadence of the resampled light curve in days.
+    size : int
+        Number of points in the resampled light curve.
+    reference_time : float
+        Value of ``time[0]``; used to form ``offset_time``.
+    offset_time : ndarray
+        ``time - reference_time`` (starts at zero).
+    flux_weight : ndarray
+        ``1 / flux_error ** 2``
+    offset_flux : ndarray
+        ``1 - flux``
+    flat_loglike : float
+        Log-likelihood of the constant (no-transit) flux model.
+    input_cadence : float
+        Detected cadence of the raw input data in days.
+    input_num_points : int
+        Number of points in the raw input data.
+    transit_mask : ndarray or None
+        Boolean array where ``True`` marks in-transit points.
+        ``None`` until :meth:`mask_transit` is called.
+    offset_trend : ndarray or None
+        Fitted trend array (set by the deprecated ``get_trend``).
+    error_multiplier : float or None
+        Error inflation factor (set by the deprecated ``get_trend``).
     """
     def __init__(self, times: np.ndarray, fluxes: np.ndarray, flux_errors: np.ndarray,
                  resample_cadence: float | None = None, verbose: bool = True) -> None:
@@ -419,7 +459,23 @@ cadence: {self.cadence * Constants.seconds_per_day:.0f}s"""
 
 class TransitModel(object):
     """
-    A transit model
+    A normalised transit shape, downsampled for use by the GPU kernels.
+
+    The model is stored in GPU shared memory during the linear search, so
+    its size is constrained by the available shared memory per block.  The
+    default of 1024 samples gives a maximum nearest-neighbour interpolation
+    error of ~1 %.
+
+    Attributes
+    ----------
+    model : ndarray
+        The downsampled transit model (flux values, max 1.0 at baseline).
+    offset_model : ndarray
+        ``1 - model`` (pre-computed to save repeated GPU operations).
+    size : int
+        Number of samples in the downsampled model.
+    input_model : ndarray
+        The raw model array supplied by the user (or loaded from file).
     """
     def __init__(self, transit_model: np.ndarray | str, downsamples: int = 1024,
                  verbose: bool = True) -> None:
@@ -599,7 +655,25 @@ class TransitModel(object):
 @dataclass
 class Transit(object):
     """
-    A transit object
+    A single (or periodic) transit.
+
+    Attributes
+    ----------
+    t0 : float
+        Mid-transit time in days (BJD or whichever epoch the input used).
+    duration : float
+        Transit duration in days.
+    depth : float
+        Transit depth as a fraction of the baseline flux.
+    depth_error : float
+        Uncertainty on the transit depth.
+    period : float or None
+        Orbital period in days.  ``None`` for single-transit candidates.
+
+    Notes
+    -----
+    The signal-to-noise ratio is ``depth / depth_error`` and is shown by
+    ``repr``.
     """
     t0: float
     duration: float
@@ -638,7 +712,29 @@ class Transit(object):
 @dataclass
 class LinearResult(object):
     """
-    A linear search result
+    Output of :meth:`TransitDetector.linear_search`.
+
+    Holds the 2-D likelihood, depth, and depth-variance arrays over the
+    ``(duration, t0)`` grid, plus references to the light curve and transit
+    model that produced them.
+
+    Attributes
+    ----------
+    light_curve : LightCurve
+        The light curve used in the search.
+    transit_model : TransitModel
+        The transit model used in the search.
+    duration_array : ndarray
+        1-D array of tested transit durations in days, shape ``(n_durations,)``.
+    t0_array : ndarray
+        1-D array of tested mid-transit times in days, shape ``(n_t0,)``.
+    like_ratio_array : ndarray
+        2-D likelihood ratio (vs. constant flux) array,
+        shape ``(n_durations, n_t0)``.
+    depth_array : ndarray
+        2-D best-fit depth array, shape ``(n_durations, n_t0)``.
+    depth_variance_array : ndarray
+        2-D depth variance array, shape ``(n_durations, n_t0)``.
     """
     light_curve: LightCurve
     transit_model: TransitModel
@@ -747,7 +843,37 @@ class LinearResult(object):
 @dataclass
 class PeriodicResult(object):
     """
-    A periodic search result
+    Output of :meth:`TransitDetector.period_search`.
+
+    Holds the 1-D periodogram arrays and a reference to the
+    :class:`LinearResult` from which it was derived.
+
+    Attributes
+    ----------
+    linear_result : LinearResult
+        The linear search result used to produce this periodogram.
+    period_array : ndarray
+        Tested orbital periods in days, shape ``(n_periods,)``.
+    like_ratio_array : ndarray
+        Joint likelihood ratio for each period, shape ``(n_periods,)``.
+    depth_array : ndarray
+        Best-fit depth at each period, shape ``(n_periods,)``.
+    depth_variance_array : ndarray
+        Depth variance at each period, shape ``(n_periods,)``.
+    duration_index_array : ndarray
+        Index into ``duration_array`` of the best-fit duration at each period,
+        shape ``(n_periods,)``.
+    t0_index_array : ndarray
+        Index into ``t0_array`` of the best-fit t0 at each period,
+        shape ``(n_periods,)``.
+    light_curve : LightCurve
+        Convenience reference to ``linear_result.light_curve``.
+    transit_model : TransitModel
+        Convenience reference to ``linear_result.transit_model``.
+    duration_array : ndarray
+        Convenience reference to ``linear_result.duration_array``.
+    t0_array : ndarray
+        Convenience reference to ``linear_result.t0_array``.
     """
     linear_result: LinearResult
     period_array: np.ndarray
@@ -871,7 +997,39 @@ class PeriodicResult(object):
 
 class TransitDetector(object):
     """
-    A tool for identifying transit-like signals in stellar light curves
+    Main orchestrator for the CETRA two-stage detection pipeline.
+
+    Wraps a :class:`LightCurve` and :class:`TransitModel`, builds the
+    duration and t0 grids, then exposes :meth:`linear_search` and
+    :meth:`period_search` to run the GPU kernels and extract transit
+    parameters.
+
+    Attributes
+    ----------
+    lc : LightCurve
+        A padded copy of the input light curve (padded by half the maximum
+        duration at each end to handle edge transits).
+    durations : ndarray
+        Transit duration grid in days.
+    transit_model : TransitModel
+        The transit model in use.
+    t0_array : ndarray
+        Grid of mid-transit times searched during the linear search.
+    t0_stride_length : float
+        Spacing between t0 grid points in days.
+    periods : ndarray or None
+        Period grid used in the most recent :meth:`period_search`, or
+        ``None`` if it has not been run.
+    min_durations : ndarray or None
+        Per-period minimum physically-motivated transit duration, populated
+        after :meth:`period_search`.
+    max_durations : ndarray or None
+        Per-period maximum physically-motivated transit duration, populated
+        after :meth:`period_search`.
+    linear_result : LinearResult or None
+        Result of the most recent :meth:`linear_search`, or ``None``.
+    periodic_result : PeriodicResult or None
+        Result of the most recent :meth:`period_search`, or ``None``.
     """
 
     def __init__(

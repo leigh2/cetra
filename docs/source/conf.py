@@ -20,6 +20,8 @@ extensions = [
 autodoc_mock_imports = ['pycuda', 'pycuda.compiler', 'pycuda.driver',
                         'pycuda.tools', 'cuda']
 
+autoclass_content = 'both'
+
 autodoc_default_options = {
     'members': True,
     'undoc-members': False,
