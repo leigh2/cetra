@@ -883,5 +883,153 @@ class TransitDetectorIntegrationTestCase(unittest.TestCase):
         self.assertEqual(transit.period, tced.periods[idx_best])
 
 
+class TestGPUKernels(unittest.TestCase):
+    """
+    Targeted tests for GPU kernels: resampling, linear search, period search.
+    Each test synthesises a light curve with known properties so failures
+    point to a specific kernel rather than the broader pipeline.
+    """
+
+    def setUp(self):
+        # standard model gives better time recovery for box-shaped injection
+        self.standard_model = TransitModel('b32', verbose=False)
+        # box model gives better depth recovery for box-shaped injection
+        self.box_model = TransitModel(
+            np.array([0.0]*4096), verbose=False
+        )
+
+    def _make_lc(self, times, fluxes, errors):
+        return LightCurve(times, fluxes, errors, verbose=False)
+
+    def _inject_box_transit(self, times, fluxes, t0, duration, depth):
+        result = fluxes.copy()
+        result[np.abs(times - t0) < duration / 2] -= depth
+        return result
+
+    # --- Resampling kernel ---
+
+    def test_resample_uniform_flux_preserved(self):
+        """resample_k1/k2: flat uniform input → output flux stays at 1.0."""
+        cadence = 1800.0 / seconds_per_day
+        n = 200
+        times = np.arange(n, dtype=float) * cadence
+        lc = self._make_lc(times, np.ones(n), np.full(n, 1e-4))
+        t, f, e = lc.resample(lc.cadence)
+        finite = np.isfinite(f) & np.isfinite(e)
+        np.testing.assert_allclose(f[finite], 1.0, rtol=1e-6)
+
+    def test_resample_gap_produces_inf_error(self):
+        """resample_k1/k2: bins with no input data must have infinite error."""
+        cadence = 1800.0 / seconds_per_day
+        # two segments separated by a 10-cadence gap
+        t1 = np.arange(80, dtype=float) * cadence
+        t2 = np.arange(90, 160, dtype=float) * cadence
+        times = np.concatenate([t1, t2])
+        lc = self._make_lc(times, np.ones(len(times)),
+                           np.full(len(times), 1e-4))
+        gap_mask = (lc.time > t1[-1] + 0.4 * cadence) & \
+                   (lc.time < t2[0] - 0.4 * cadence)
+        self.assertTrue(gap_mask.sum() > 0, "no gap bins found")
+        self.assertTrue(np.all(np.isinf(lc.flux_error[gap_mask])))
+
+    def test_resample_explicit_coarser_cadence(self):
+        """resample() called post-construction at 2x cadence returns correct flux."""
+        cadence = 1800.0 / seconds_per_day
+        n = 400
+        times = np.arange(n, dtype=float) * cadence
+        lc = self._make_lc(times, np.ones(n), np.full(n, 1e-4))
+        t, f, e = lc.resample(lc.cadence * 2)
+        self.assertLess(len(t), lc.size)
+        finite = np.isfinite(f) & np.isfinite(e)
+        np.testing.assert_allclose(f[finite], 1.0, rtol=1e-5)
+
+    def test_resample_invalid_cadence_raises(self):
+        """resample() rejects non-positive or non-finite cadences."""
+        lc = _flat_lc()
+        for bad in (0.0, -1.0, np.nan, np.inf):
+            with self.assertRaises((ValueError, Exception)):
+                lc.resample(bad)
+
+    # --- Linear search kernel ---
+
+    def test_linear_search_peak_at_injected_t0(self):
+        """Linear kernel: like_ratio peak should be at the injected t0."""
+        cadence = 1800.0 / seconds_per_day
+        n = 600
+        times = np.arange(n, dtype=float) * cadence
+        true_duration = 15 * cadence        # well within default grid
+        true_t0 = times[n // 2]
+        fluxes = self._inject_box_transit(
+            times, np.ones(n), true_t0, true_duration, depth=0.005)
+        lc = self._make_lc(times, fluxes, np.full(n, 1e-4))
+        tced = TransitDetector(
+            lc, transit_model=self.standard_model, verbose=False
+        )
+        lr = tced.linear_search(verbose=False)
+
+        # which duration index is closest to the injection?
+        dur_idx = np.argmin(np.abs(tced.durations - true_duration))
+        peak_t0_idx = np.nanargmax(lr.like_ratio_array[dur_idx])
+        t0_diff = np.abs(tced.t0_array[peak_t0_idx] - true_t0)
+        self.assertLess(t0_diff, tced.t0_stride_length * 5)
+
+    def test_linear_search_depth_recovery(self):
+        """Linear kernel: best-fit depth should be close to the injected depth."""
+        cadence = 1800.0 / seconds_per_day
+        n = 600
+        times = np.arange(n, dtype=float) * cadence
+        true_duration = 15 * cadence
+        true_depth = 0.005
+        fluxes = self._inject_box_transit(
+            times, np.ones(n), times[n // 2], true_duration, true_depth)
+        lc = self._make_lc(times, fluxes, np.full(n, 1e-4))
+        tced = TransitDetector(lc, transit_model=self.box_model, verbose=False)
+        tced.linear_search(verbose=False)
+        transit = tced.get_max_likelihood_single_transit()
+        self.assertAlmostEqual(transit.depth, true_depth, places=2)
+
+    def test_linear_search_flat_lc_low_snr(self):
+        """Linear kernel: flat light curve with no noise should produce SNR of
+        zero."""
+        lc = _flat_lc(n=600)
+        tced = TransitDetector(lc, transit_model=self.standard_model, verbose=False)
+        tced.linear_search(verbose=False)
+        transit = tced.get_max_snr_single_transit()
+        self.assertLess(transit.depth / transit.depth_error, 1E-6)
+
+    # --- Period search kernel ---
+
+    def test_period_search_peak_at_injected_period(self):
+        """Period kernel: periodogram should peak at the true period."""
+        cadence = 1800.0 / seconds_per_day
+        n = 3000
+        times = np.arange(n, dtype=float) * cadence
+        true_period = 10.0
+        true_duration = 15 * cadence
+        true_depth = 0.005
+        fluxes = np.ones(n)
+        t0 = 1.0
+        while t0 < times[-1]:
+            fluxes = self._inject_box_transit(
+                times, fluxes, t0, true_duration, true_depth)
+            t0 += true_period
+        lc = self._make_lc(times, fluxes, np.full(n, 1e-4))
+        tced = TransitDetector(
+            lc, transit_model=self.standard_model, verbose=False
+        )
+        tced.linear_search(verbose=False)
+        tced.period_search(verbose=False)
+        transit = tced.get_max_likelihood_periodic_transit()
+        self.assertAlmostEqual(transit.period, true_period, places=2)
+
+    def test_period_search_like_ratio_nonnegative(self):
+        """Period kernel: all like_ratio values must be >= 0."""
+        lc = _flat_lc(n=800)
+        tced = TransitDetector(lc, transit_model=self.box_model, verbose=False)
+        tced.linear_search(verbose=False)
+        ptr = tced.period_search(verbose=False)
+        self.assertTrue(np.all(ptr.like_ratio_array >= 0))
+
+
 if __name__ == '__main__':
     unittest.main()
