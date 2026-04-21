@@ -3,7 +3,7 @@ Exoplanet transit detection within the NVIDIA CUDA GPU framework.
 
 ## Change log
 * v1.05 (####-##-##)
-  * 
+  * Added an optional likelihood_ratio field to the Transit class
 * v1.04 (2026-04-20)
   * Min and max durations as a function of period are now stored as TransitDetector attributes after period search.
   * Nicer \_\_repr\_\_ for the Transit class.

@@ -669,6 +669,9 @@ class Transit(object):
         Uncertainty on the transit depth.
     period : float or None
         Orbital period in days.  ``None`` for single-transit candidates.
+    likelihood_ratio : float or None
+        Log-likelihood ratio of the best-fit transit model vs. a constant
+        flux model.  ``None`` if not available.
 
     Notes
     -----
@@ -680,19 +683,25 @@ class Transit(object):
     depth: float
     depth_error: float
     period: float = None
+    likelihood_ratio: float = None
 
     def __repr__(self):
         if self.period is not None:
             repr_period = f"{self.period:.6f}"
         else:
             repr_period = "None"
+        if self.likelihood_ratio is not None:
+            repr_lr = f"\n    likelihood_ratio = {self.likelihood_ratio:.4f}"
+        else:
+            repr_lr = ""
         return (f"Transit(\n"
                 f"    t0 = {self.t0:.3f}\n"
                 f"    duration = {self.duration:.3f}\n"
                 f"    depth = {self.depth:.3e}\n"
                 f"    depth_error = {self.depth_error:.3e}\n"
                 f"    period = {repr_period}\n"
-                f"    SNR = {self.depth / self.depth_error:.2f}\n"
+                f"    SNR = {self.depth / self.depth_error:.2f}"
+                f"{repr_lr}\n"
                 f")")
 
     def copy(self) -> 'Transit':
@@ -830,13 +839,15 @@ class LinearResult(object):
         duration = self.duration_array[duration_index]
         depth = self.depth_array[duration_index, t0_index]
         depth_error = np.sqrt(self.depth_variance_array[duration_index, t0_index])
+        likelihood_ratio = self.like_ratio_array[duration_index, t0_index]
 
         # generate the grid search Transit object
         return Transit(
             t0=t0,
             duration=duration,
             depth=depth,
-            depth_error=depth_error
+            depth_error=depth_error,
+            likelihood_ratio=likelihood_ratio
         )
 
 
@@ -979,6 +990,7 @@ class PeriodicResult(object):
         duration = self.duration_array[duration_index]
         depth = self.depth_array[period_index]
         depth_error = np.sqrt(self.depth_variance_array[period_index])
+        likelihood_ratio = self.like_ratio_array[period_index]
 
         # we might want t0 to be the first complete transit, but it could
         # come back before the start of the data. quick fix...
@@ -991,7 +1003,8 @@ class PeriodicResult(object):
             duration=duration,
             depth=depth,
             depth_error=depth_error,
-            period=period
+            period=period,
+            likelihood_ratio=likelihood_ratio
         )
 
 
