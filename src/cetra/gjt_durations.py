@@ -79,7 +79,7 @@ def get_axis(density_star: float,
 def get_stable_orbits(axis: np.ndarray,
                       min_separation: float = 3.
                       ) -> StableOrbit:
-    """ Compute the limiting values for the semi-major axis and eccentricty
+    """ Compute the limiting values for the semi-major axis and eccentricity
         that still result in stable orbits.
 
     Parameters
@@ -92,7 +92,7 @@ def get_stable_orbits(axis: np.ndarray,
     Returns
     -------
     stable_orbit: StableOrbit
-        Named tuple containing the semi-major axis and eccentricty of the
+        Named tuple containing the semi-major axis and eccentricity of the
         most eccentric stable orbit.
 
     """
@@ -132,10 +132,10 @@ def get_orbit_bounds(period_grid: np.ndarray,
     Returns
     -------
     inner_orbit: StableOrbit
-        A named tuple containing the semi-major axis and eccentricty of the
+        A named tuple containing the semi-major axis and eccentricity of the
         innermost stable orbit.
     outer_orbit: StableOrbit
-        A named tuple containing the semi-major axis and eccentricty of the
+        A named tuple containing the semi-major axis and eccentricity of the
         outermost stable orbit.
 
     """
@@ -155,7 +155,7 @@ def get_transit_duration(period: Union[float, np.ndarray],
                          axis: Union[float, np.ndarray],
                          planet_radius: Union[float, np.ndarray],
                          impact_param: Union[float, np.ndarray],
-                         eccentricty: Union[float, np.ndarray],
+                         eccentricity: Union[float, np.ndarray],
                          arg_periastron: Union[float, np.ndarray]
                          ) -> Union[float, np.ndarray]:
     """ Compute the full transit duration (T14) for an eccentric orbit, using
@@ -171,8 +171,8 @@ def get_transit_duration(period: Union[float, np.ndarray],
         The planet radius value(s) in stellar radii.
     impact_param: float or np.ndarray
         The impact parameter value(s).
-    eccentricty: float or np.ndarray
-        The orbital eccentricty value(s).
+    eccentricity: float or np.ndarray
+        The orbital eccentricity value(s).
     arg_periastron: float or np.ndarray
         The argument of periastron in degrees.
 
@@ -185,8 +185,8 @@ def get_transit_duration(period: Union[float, np.ndarray],
     arg_periastron = np.deg2rad(arg_periastron)
 
     # Compute the eccentricity terms.
-    x = np.sqrt(1 - eccentricty ** 2)
-    y = 1 + eccentricty * np.sin(arg_periastron)
+    x = np.sqrt(1 - eccentricity ** 2)
+    y = 1 + eccentricity * np.sin(arg_periastron)
 
     alpha = x/y
     beta = x**2/y
@@ -231,17 +231,17 @@ def get_transit_duration_limits(period_grid: np.ndarray,
         The minimum orbital separation in stellar radii (default: 3).
     circular_orbits: bool
         If True compute the shortest and longest duration on circular orbits,
-        i.e. forces the eccentricty to zero (default: False).
+        i.e. forces the eccentricity to zero (default: False).
 
     Returns
     -------
     duration_limits: DurationLimits
         A named tuple containing the short and long duration limits.
     inner_orbit: StableOrbit
-        A named tuple containing the semi-major axis and eccentricty of the
+        A named tuple containing the semi-major axis and eccentricity of the
         innermost stable orbit.
     outer_orbit: StableOrbit
-        A named tuple containing the semi-major axis and eccentricty of the
+        A named tuple containing the semi-major axis and eccentricity of the
         outermost stable orbit.
 
     """
@@ -267,7 +267,7 @@ def get_transit_duration_limits(period_grid: np.ndarray,
     radius_ratio_min = planet_radius_min/stellar_radius_maxdens
     radius_ratio_max = planet_radius_max/stellar_radius_mindens
 
-    # Compute the scaled semi-major axis and eccentricty limits for the density values.
+    # Compute the scaled semi-major axis and eccentricity limits for the density values.
     result = get_orbit_bounds(period_grid, density_min, density_max, min_separation=min_separation)
     inner_orbit, outer_orbit = result
 
