@@ -113,6 +113,10 @@ class LightCurve(object):
         Detected cadence of the raw input data in days.
     input_num_points : int
         Number of points in the raw input data.
+    obs_counts : ndarray
+        Integer array (same length as ``time``) giving the number of input
+        observations that contributed to each resampled point.  Zero for
+        gap-filled null points.
     transit_mask : ndarray or None
         Boolean array where ``True`` marks in-transit points.
         ``None`` until :meth:`mask_transit` is called.
@@ -235,7 +239,7 @@ class LightCurve(object):
         else:
             self.cadence = resample_cadence / Constants.seconds_per_day
         # perform the resampling
-        self.time, self.flux, self.flux_error = self.resample(self.cadence)
+        self.time, self.flux, self.flux_error, self.obs_counts = self.resample(self.cadence)
 
         # the number of points in the resampled light curve
         self.size = len(self.time)
@@ -273,7 +277,7 @@ resampled light curve has {self.size} elements, \
 cadence: {self.cadence * Constants.seconds_per_day:.0f}s"""
 
     def resample(self, new_cadence: float, cuda_blocksize: int = 1024
-                 ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+                 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
         Resample the light curve at a new cadence.
         (Note: Any existing transit masks will be lost, it's recommended
@@ -290,7 +294,8 @@ cadence: {self.cadence * Constants.seconds_per_day:.0f}s"""
 
         Returns
         -------
-        A LightCurve instance with the new sampling cadence
+        A 4-tuple of ``(time, flux, flux_error, obs_counts)`` arrays on the
+        new cadence grid.
         """
         _ensure_kernels()
 
@@ -320,6 +325,7 @@ cadence: {self.cadence * Constants.seconds_per_day:.0f}s"""
         _err_out = gpuarray.zeros(new_times.size, dtype=np.float64)
         _sum_fw = gpuarray.zeros(new_times.size, dtype=np.float64)
         _sum_w = gpuarray.zeros(new_times.size, dtype=np.float64)
+        _obs_count = gpuarray.zeros(new_times.size, dtype=np.int32)
         # type specification
         _cadence = np.float64(new_cadence)
         _n_elem = np.int32(self.input_num_points)
@@ -332,7 +338,7 @@ cadence: {self.cadence * Constants.seconds_per_day:.0f}s"""
 
         # run the kernel to sum the fluxes and their weights
         _resample_kernel_1(
-            _time, _flux, _ferr, _cadence, _n_elem, _sum_fw, _sum_w,
+            _time, _flux, _ferr, _cadence, _n_elem, _sum_fw, _sum_w, _obs_count,
             block=_blocksize, grid=_gridsize1
         )
         # now run the division kernel
@@ -341,7 +347,7 @@ cadence: {self.cadence * Constants.seconds_per_day:.0f}s"""
             block=_blocksize, grid=_gridsize2
         )
 
-        return new_times, _rflux_out.get(), _err_out.get()
+        return new_times, _rflux_out.get(), _err_out.get(), _obs_count.get()
 
     def pad(self, num_points_prepend: int, num_points_append: int, verbose: bool = True) -> None:
         """
@@ -366,9 +372,11 @@ cadence: {self.cadence * Constants.seconds_per_day:.0f}s"""
         _t0 = self.time[0] - np.arange(num_points_prepend, 0, -1) * self.cadence
         _f0 = np.full(num_points_prepend, np.nan, dtype=self.flux.dtype)
         _ef0 = np.full(num_points_prepend, np.inf, dtype=self.flux_error.dtype)
+        _oc0 = np.zeros(num_points_prepend, dtype=self.obs_counts.dtype)
         self.time = np.insert(self.time, 0, _t0)
         self.flux = np.insert(self.flux, 0, _f0)
         self.flux_error = np.insert(self.flux_error, 0, _ef0)
+        self.obs_counts = np.insert(self.obs_counts, 0, _oc0)
         if self.offset_trend is not None:
             # prepend NaNs
             self.offset_trend = np.insert(self.offset_trend, 0, _f0)
@@ -377,9 +385,11 @@ cadence: {self.cadence * Constants.seconds_per_day:.0f}s"""
         _t1 = self.time[-1] + np.arange(1, num_points_append + 1) * self.cadence
         _f1 = np.full(num_points_append, np.nan, dtype=self.flux.dtype)
         _ef1 = np.full(num_points_append, np.inf, dtype=self.flux_error.dtype)
+        _oc1 = np.zeros(num_points_append, dtype=self.obs_counts.dtype)
         self.time = np.append(self.time, _t1)
         self.flux = np.append(self.flux, _f1)
         self.flux_error = np.append(self.flux_error, _ef1)
+        self.obs_counts = np.append(self.obs_counts, _oc1)
         if self.offset_trend is not None:
             # append NaNs
             self.offset_trend = np.append(self.offset_trend, _f1)
@@ -442,6 +452,55 @@ cadence: {self.cadence * Constants.seconds_per_day:.0f}s"""
         # return the mask for this transit only, if requested
         if return_mask:
             return in_transit
+
+    def count_obs_in_transit(self, transit: 'Transit') -> int:
+        """
+        Count the number of input observations that fall within a transit.
+
+        Uses :attr:`obs_counts` to sum raw input observations per resampled
+        bin.  Bins masked by :attr:`transit_mask` (i.e. previously found
+        transits) are excluded, matching the behaviour of the search kernels.
+        For periodic transits all occurrences within the light curve are
+        summed.
+
+        Parameters
+        ----------
+        transit : Transit
+            The transit to count observations for (single or periodic).
+
+        Returns
+        -------
+        int
+            Total number of input observations in transit.
+        """
+        if self.transit_mask is not None:
+            unmasked = ~self.transit_mask
+        else:
+            unmasked = np.ones(self.size, dtype=bool)
+
+        half_dur = 0.5 * transit.duration
+
+        if transit.period is None:
+            in_transit = (
+                (self.time >= transit.t0 - half_dur)
+                & (self.time <= transit.t0 + half_dur)
+                & unmasked
+            )
+            return np.sum(self.obs_counts[in_transit])
+        else:
+            count = 0
+            t0 = transit.t0
+            while t0 < self.input_time_start:
+                t0 += transit.period
+            for tr_time in np.arange(t0, self.input_time_end + transit.period,
+                                     transit.period):
+                in_transit = (
+                    (self.time >= tr_time - half_dur)
+                    & (self.time <= tr_time + half_dur)
+                    & unmasked
+                )
+                count += np.sum(self.obs_counts[in_transit])
+            return count
 
     def copy(self) -> 'LightCurve':
         """
@@ -672,6 +731,8 @@ class Transit(object):
     likelihood_ratio : float or None
         Log-likelihood ratio of the best-fit transit model vs. a constant
         flux model.  ``None`` if not available.
+    n_obs_in_transit : int or None
+        Number of in-transit observations.  ``None`` if not available.
 
     Notes
     -----
@@ -684,24 +745,30 @@ class Transit(object):
     depth_error: float
     period: float = None
     likelihood_ratio: float = None
+    n_obs_in_transit: int = None
 
     def __repr__(self):
         if self.period is not None:
-            repr_period = f"{self.period:.6f}"
+            repr_period = f"\n    period = {self.period:.6f}"
         else:
-            repr_period = "None"
+            repr_period = ""
         if self.likelihood_ratio is not None:
             repr_lr = f"\n    likelihood_ratio = {self.likelihood_ratio:.4f}"
         else:
             repr_lr = ""
+        if self.n_obs_in_transit is not None:
+            repr_nobs = f"\n    n_obs_in_transit = {self.n_obs_in_transit}"
+        else:
+            repr_nobs = ""
         return (f"Transit(\n"
                 f"    t0 = {self.t0:.3f}\n"
                 f"    duration = {self.duration:.3f}\n"
                 f"    depth = {self.depth:.3e}\n"
                 f"    depth_error = {self.depth_error:.3e}\n"
-                f"    period = {repr_period}\n"
                 f"    SNR = {self.depth / self.depth_error:.2f}"
-                f"{repr_lr}\n"
+                f"{repr_period}"
+                f"{repr_lr}"
+                f"{repr_nobs}\n"
                 f")")
 
     def copy(self) -> 'Transit':
@@ -842,13 +909,19 @@ class LinearResult(object):
         likelihood_ratio = self.like_ratio_array[duration_index, t0_index]
 
         # generate the grid search Transit object
-        return Transit(
+        transit = Transit(
             t0=t0,
             duration=duration,
             depth=depth,
             depth_error=depth_error,
-            likelihood_ratio=likelihood_ratio
+            likelihood_ratio=likelihood_ratio,
         )
+
+        # count the number of in-transit observations
+        if self.light_curve is not None and hasattr(self.light_curve, 'obs_counts'):
+            transit.n_obs_in_transit = self.light_curve.count_obs_in_transit(transit)
+
+        return transit
 
 
 @dataclass
@@ -998,14 +1071,20 @@ class PeriodicResult(object):
             t0 += period
 
         # generate the grid search Transit object
-        return Transit(
+        transit = Transit(
             t0=t0,
             duration=duration,
             depth=depth,
             depth_error=depth_error,
             period=period,
-            likelihood_ratio=likelihood_ratio
+            likelihood_ratio=likelihood_ratio,
         )
+
+        # count the number of in-transit observations
+        if self.light_curve is not None and hasattr(self.light_curve, 'obs_counts'):
+            transit.n_obs_in_transit = self.light_curve.count_obs_in_transit(transit)
+
+        return transit
 
 
 class TransitDetector(object):

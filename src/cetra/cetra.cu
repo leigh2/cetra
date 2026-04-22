@@ -744,7 +744,8 @@ __global__ void resample_k1(
     const double cadence,  // desired output cadence
     const int n_elem,  // number of elements in input light curve
     double * sum_of_weighted_flux,  // array of sum(f*w)
-    double * sum_of_weights  // array of sum(w)
+    double * sum_of_weights,  // array of sum(w)
+    int * obs_count  // array of input observation counts per output bin
 ){
     const int x_idx = blockIdx.x * blockDim.x + threadIdx.x;
     if (x_idx >= n_elem) return;
@@ -761,6 +762,7 @@ __global__ void resample_k1(
     // incorporate this light curve point into the output light curve
     atomicAdd(&sum_of_weighted_flux[idx_out], flux[x_idx]*weight);
     atomicAdd(&sum_of_weights[idx_out], weight);
+    atomicAdd(&obs_count[idx_out], 1);
 }
 
 // light curve resampling - stage 2

@@ -914,7 +914,7 @@ class TestGPUKernels(unittest.TestCase):
         n = 200
         times = np.arange(n, dtype=float) * cadence
         lc = self._make_lc(times, np.ones(n), np.full(n, 1e-4))
-        t, f, e = lc.resample(lc.cadence)
+        t, f, e, oc = lc.resample(lc.cadence)
         finite = np.isfinite(f) & np.isfinite(e)
         np.testing.assert_allclose(f[finite], 1.0, rtol=1e-6)
 
@@ -938,7 +938,7 @@ class TestGPUKernels(unittest.TestCase):
         n = 400
         times = np.arange(n, dtype=float) * cadence
         lc = self._make_lc(times, np.ones(n), np.full(n, 1e-4))
-        t, f, e = lc.resample(lc.cadence * 2)
+        t, f, e, oc = lc.resample(lc.cadence * 2)
         self.assertLess(len(t), lc.size)
         finite = np.isfinite(f) & np.isfinite(e)
         np.testing.assert_allclose(f[finite], 1.0, rtol=1e-5)
@@ -949,6 +949,43 @@ class TestGPUKernels(unittest.TestCase):
         for bad in (0.0, -1.0, np.nan, np.inf):
             with self.assertRaises((ValueError, Exception)):
                 lc.resample(bad)
+
+    def test_obs_counts(self):
+        """obs_counts: shape, gap zeros, total, and coarser-cadence binning."""
+        cadence = 1800.0 / seconds_per_day
+
+        # --- shape and total ---
+        # uniform light curve: every resampled bin should have exactly 1 input obs
+        n = 200
+        times = np.arange(n, dtype=float) * cadence
+        lc = self._make_lc(times, np.ones(n), np.full(n, 1e-4))
+        self.assertEqual(len(lc.obs_counts), lc.size)
+        self.assertEqual(lc.obs_counts.sum(), n)
+        self.assertTrue(np.all(lc.obs_counts == 1))
+
+        # --- gap bins have zero count ---
+        t1 = np.arange(80, dtype=float) * cadence
+        t2 = np.arange(90, 160, dtype=float) * cadence
+        times_gap = np.concatenate([t1, t2])
+        lc_gap = self._make_lc(times_gap, np.ones(len(times_gap)),
+                               np.full(len(times_gap), 1e-4))
+        gap_mask = (lc_gap.time > t1[-1] + 0.4 * cadence) & \
+                   (lc_gap.time < t2[0] - 0.4 * cadence)
+        self.assertTrue(np.all(lc_gap.obs_counts[gap_mask] == 0))
+        # every observation landed outside the gap
+        self.assertTrue(np.all(~gap_mask[lc_gap.obs_counts > 0]))
+        # total matches number of input points
+        self.assertEqual(lc_gap.obs_counts.sum(), len(times_gap))
+
+        # --- coarser resampling conserves total count ---
+        n = 400
+        times = np.arange(n, dtype=float) * cadence
+        lc2 = self._make_lc(times, np.ones(n), np.full(n, 1e-4))
+        _, _, _, oc2 = lc2.resample(lc2.cadence * 2)
+        # output has fewer bins than input
+        self.assertLess(len(oc2), n)
+        # all input observations are accounted for
+        self.assertEqual(oc2.sum(), n)
 
     # --- Linear search kernel ---
 

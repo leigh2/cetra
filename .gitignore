@@ -1,1 +1,9 @@
 docs/build/
+build/
+dist/
+*.egg-info/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+mastDownload/
+*.fits

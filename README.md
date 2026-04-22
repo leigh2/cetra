@@ -3,7 +3,11 @@ Exoplanet transit detection within the NVIDIA CUDA GPU framework.
 
 ## Change log
 * v1.05 (####-##-##)
-  * Added an optional likelihood_ratio field to the Transit class
+  * Added optional likelihood_ratio and n_obs_in_transit fields to the Transit class
+  * LightCurve class gains the obs_counts array, which contains the number of observations contributing to each resampled point.
+  * LightCurve.resample() return changed from 3-tuple to 4-tuple: (time, flux, flux_error, obs_counts) — this is a breaking change for anyone calling resample() directly.     
+  * Added a method to the LightCurve class to obtain the number of observations in a Transit.
+  * New tests to cover the above as appropriate.
 * v1.04 (2026-04-20)
   * Min and max durations as a function of period are now stored as TransitDetector attributes after period search.
   * Nicer \_\_repr\_\_ for the Transit class.
