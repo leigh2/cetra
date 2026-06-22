@@ -791,11 +791,15 @@ __global__ void periodic_search_k1(
     const int duration_idx_first,  // the index of the first duration to check
     const int duration_idx_last,  // the index of the last duration to check
     const int max_transit_count,  // the maximum possible number of transits for this period
-    float * lrat_out,  // the temporary max likelihood ratio array (to be filled)
-    float * depth_out,  // the temporary depth array (to be filled)
-    float * vdepth_out,  // the temporary depth variance array (to be filled)
-    int * d_idx_out,  // the temporary duration index array (to be filled)
-    int * t0_idx_out  // the temporary reference time index array (to be filled)
+    // packed per-block winner: [lrat, depth, vdepth, d_idx, t0_idx], shape
+    // (n_blocks, 5). Only one thread per block writes its result (see
+    // below), so packing the 5 fields into one contiguous record means
+    // that single thread's write hits one cache line instead of 5 - the
+    // previous 5-separate-arrays layout measured at ~4/32 bytes utilised
+    // per sector under ncu (each lone-thread write still pulls a full
+    // 32-byte sector). d_idx/t0_idx are stored as exact-integer floats,
+    // the same trick already used for sm_id above.
+    float * out
 ){
     // variable declarations
     bool null = false;
@@ -915,30 +919,25 @@ __global__ void periodic_search_k1(
         __syncthreads();
     }
 
-    // only the max-likelihood ratio thread records its results
+    // only the max-likelihood ratio thread records its results, as a
+    // single packed 5-float record instead of 5 separate scalar writes
     const int best_tid = lrintf(sm_id[0]);
     if (threadIdx.x == best_tid) {
-        lrat_out[out2d_ptr] = sm_lr[threadIdx.x];
-        depth_out[out2d_ptr] = wav_depth;
-        vdepth_out[out2d_ptr] = var_depth;
-        d_idx_out[out2d_ptr] = dur_idx;
-        t0_idx_out[out2d_ptr] = t0_idx;
+        float * rec = &out[out2d_ptr * 5];
+        rec[0] = sm_lr[threadIdx.x];
+        rec[1] = wav_depth;
+        rec[2] = var_depth;
+        rec[3] = 1.0f * dur_idx;
+        rec[4] = 1.0f * t0_idx;
     }
 }
 
 // periodic search - kernel 2 (second-stage reduction operation)
 __global__ void periodic_search_k2(
-    const float * lrat_in,  // max likelihood ratio array
-    const float * depth_in,  // depth array
-    const float * vdepth_in,  // depth variance array
-    const int * d_idx_in,  // duration index array
-    const int * t0_idx_in,  // reference time index array
-    float * lrat_out,  // max likelihood ratio array (single element - to be filled)
-    float * depth_out,  // depth array (single element - to be filled)
-    float * vdepth_out,  // depth variance array (single element - to be filled)
-    int * d_idx_out,  // duration index array (single element - to be filled)
-    int * t0_idx_out,  // reference time index array (single element - to be filled)
-    const int in_arr_len  // length of input arrays
+    const float * in,  // packed [lrat, depth, vdepth, d_idx, t0_idx] per
+                        // block-1 winner from periodic_search_k1, shape (in_arr_len, 5)
+    float * out,  // packed single winning record (5 floats, to be filled)
+    const int in_arr_len  // number of records in the input array
 ){
     // pointers for the 2 arrays in shared memory
     float * sm_lr = (float*)&sm;
@@ -953,10 +952,11 @@ __global__ void periodic_search_k2(
     for (int i = 0 ; i < in_arr_len ; i += blockDim.x){
         int idx = i + threadIdx.x;
         if (idx >= in_arr_len) break;
+        float lrat = in[idx * 5];
         if (   (isnan(sm_lr[threadIdx.x]))
-            || ((lrat_in[idx] > sm_lr[threadIdx.x]) && (!isnan(lrat_in[idx])))
+            || ((lrat > sm_lr[threadIdx.x]) && (!isnan(lrat)))
             ){
-            sm_lr[threadIdx.x] = lrat_in[idx];
+            sm_lr[threadIdx.x] = lrat;
             sm_id[threadIdx.x] = 1.0f * idx;
         }
     }
@@ -977,10 +977,11 @@ __global__ void periodic_search_k2(
 
     // record the maximum likelihood parameters
     const int best_idx = lrintf(sm_id[0]);
-    lrat_out[0] = lrat_in[best_idx];
-    depth_out[0] = depth_in[best_idx];
-    vdepth_out[0] = vdepth_in[best_idx];
-    d_idx_out[0] = d_idx_in[best_idx];
-    t0_idx_out[0] = t0_idx_in[best_idx];
+    const float * rec = &in[best_idx * 5];
+    out[0] = rec[0];
+    out[1] = rec[1];
+    out[2] = rec[2];
+    out[3] = rec[3];
+    out[4] = rec[4];
 
 }
