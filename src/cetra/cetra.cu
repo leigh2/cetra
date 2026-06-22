@@ -827,12 +827,41 @@ __global__ void periodic_search_k1(
     const int out2d_ptr = blockIdx.x + gridDim.x * blockIdx.y;
 
     // accumulators
-    float _sum_dw = 0.0;
-    float _sum_w = 0.0;
+    // wav_depth/M2 are updated incrementally per-iteration below (West's
+    // online weighted mean/variance algorithm) instead of the previous
+    // two-pass approach (one loop for the weighted mean, a second loop
+    // re-reading the same global arrays to accumulate residuals against
+    // it). This is the textbook reason two-pass variance algorithms
+    // exist - you need the final mean before you can form a residual -
+    // but West's update folds the residual accumulation into the same
+    // single pass.
+    // These three accumulators are double precision, not float - an
+    // all-float32 version of this update was tried and measurably wrong:
+    // it recovers harmonics of the injected period (P/2, P/3) instead of
+    // P on the integration test fixture, because wav_depth/M2 here
+    // accumulate over every transit of a (period, duration, t0) trial
+    // and the per-iteration `delta` terms get small relative to the
+    // running mean, so float32 rounding in the update is enough to flip
+    // which of several near-tied periodogram peaks wins. float32's
+    // narrower mantissa was the problem, not the algorithm. Promoting
+    // just these three accumulators to double validated correctly
+    // against the original two-pass float32 output (full test suite,
+    // including period-recovery integration tests) and was still faster
+    // overall: A100's FP64 throughput is high enough that halving this
+    // kernel's global memory traffic (no second loop re-reading
+    // in_depth/in_var_depth) outweighs double-precision arithmetic cost.
+    double _sum_w = 0.0;
+    double wav_depth = 0.0;
+    double M2 = 0.0;
+    float _sum_lrats_sgl = 0.0;
     // accumulate the number of transits
     int n_transits = 0;
-    // loop through the input arrays to determine the maximum likelihood depth
+    // loop through the input arrays to determine the maximum likelihood
+    // depth and the joint likelihood, in a single pass
     for (int i = 0; i < max_transit_count; i++){
+        // simply taking the nearest element, could interpolate and probably wouldn't
+        // be too expensive, but this should be adequate - test this!
+
         // compute the reference time index of this iteration
         int _t0_idx = t0_idx + lrintf(period_strides * i);
         if (_t0_idx >= long_t0_count) break;  // exit the loop if out of bounds
@@ -846,41 +875,6 @@ __global__ void periodic_search_k1(
 
         // inverse variance weight
         float weight = 1.0f / _var;
-
-        // add to accumulators
-        _sum_dw += in_depth[in2d_ptr] * weight;
-        _sum_w += weight;
-        n_transits += 1;
-    }
-
-    // nullify this thread if there were fewer than 2 transits
-    if (n_transits < 2){
-        null = true;
-    }
-
-    // compute the maximum likelihood depth
-    float wav_depth = _sum_dw / _sum_w;
-    float var_depth = 1.0f / _sum_w;
-
-    // accumulators
-    float _sum_lrats_sgl = 0.0;
-    float _sum_logs = 0.0;
-    // loop through the input arrays again to compute the joint-likelihood
-    for (int i = 0; i < max_transit_count; i++){
-        // simply taking the nearest element, could interpolate and probably wouldn't
-        // be too expensive, but this should be adequate - test this!
-
-        // compute the reference time index of this iteration
-        int _t0_idx = t0_idx + lrintf(period_strides * i);
-        if (_t0_idx >= long_t0_count) break;  // exit the loop if out of bounds
-
-        // pointer into 2d input arrays
-        int in2d_ptr = _t0_idx + long_t0_count * dur_idx;
-
-        // do nothing in this iteration if infinite variance
-        float _var_depth = in_var_depth[in2d_ptr];
-        if (isinf(_var_depth)) continue;
-
         // depth
         float _depth = in_depth[in2d_ptr];
         // likelihood ratio
@@ -889,10 +883,25 @@ __global__ void periodic_search_k1(
         // add single transit likelihood ratio to accumulator
         _sum_lrats_sgl += _lrat;
 
-        // compute the second part
-        float ddepth = _depth - wav_depth;
-        _sum_logs += (ddepth * ddepth / _var_depth);
+        // West's incremental weighted mean/variance update
+        _sum_w += (double)weight;
+        double delta = (double)_depth - wav_depth;
+        wav_depth += ((double)weight / _sum_w) * delta;
+        M2 += (double)weight * delta * ((double)_depth - wav_depth);
+
+        n_transits += 1;
     }
+
+    // nullify this thread if there were fewer than 2 transits
+    if (n_transits < 2){
+        null = true;
+    }
+
+    // compute the maximum likelihood depth variance and joint-likelihood
+    // residual sum (M2 already equals sum(w_i * (depth_i - wav_depth)^2)
+    // by construction of the update above)
+    float var_depth = (float)(1.0 / _sum_w);
+    float _sum_logs = (float)M2;
 
     // combine the accumulators compute the (joint) likelihood ratio
     // only do this if we've not nullified the thread
